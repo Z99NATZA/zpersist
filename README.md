@@ -26,3 +26,7 @@ make run
 # Stop
 make down
 ```
+
+## Documentation
+
+[Documentation index](docs/README.md)
