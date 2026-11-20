@@ -4,8 +4,9 @@ mod database;
 use auth::Auth;
 use axum::{
     Json, Router,
-    http::{StatusCode, header},
-    middleware,
+    extract::Request,
+    http::{HeaderValue, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -112,6 +113,22 @@ where
     }
 }
 
+async fn web_cache(mut request: Request, next: Next) -> Response {
+    let is_index = matches!(request.uri().path(), "/" | "/index.html");
+    if is_index {
+        // Reusing an older Docker image can move the index's timestamp backwards.
+        request.headers_mut().remove(header::IF_MODIFIED_SINCE);
+    }
+
+    let mut response = next.run(request).await;
+    if is_index || response.status() == StatusCode::NOT_FOUND {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    response
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let state = AppState {
@@ -134,8 +151,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }));
     let directory = env::var("STATIC_DIR").unwrap_or_else(|_| "frontend/dist".into());
     let app = Router::new()
-        .nest("/api", api)
         .fallback_service(ServeDir::new(directory))
+        .layer(middleware::from_fn(web_cache))
+        .nest("/api", api)
         .with_state(state);
     let address = env::var("APP_BIND").unwrap_or_else(|_| "0.0.0.0:8003".into());
     let listener = TcpListener::bind(address.parse::<SocketAddr>()?).await?;
