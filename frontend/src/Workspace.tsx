@@ -8,6 +8,18 @@ import { useI18n } from './i18n';
 
 const MAX_VISIBLE_RESULTS = 5;
 const INITIAL_SQL = 'SELECT DB_NAME() AS [database_name];\nSELECT SYSDATETIME() AS [server_time];';
+const MAX_DATABASE_STRETCH = 26;
+const DATABASE_SPRING_RATE = 0.038;
+
+type DatabaseScrollMotion = {
+  direction: number;
+  edge: number;
+  position: number;
+  velocity: number;
+  stretch: number;
+  idleTime: number;
+  recovering: boolean;
+};
 
 export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }) {
   const { t, number } = useI18n();
@@ -135,15 +147,7 @@ export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }
           {databaseError ? <ErrorNotice problem={databaseError} /> : (
             loadingDatabases && !databases.length ? <p className="explorer-message" role="status">{t('loadingDatabases')}</p> :
             !databases.length ? <p className="explorer-message">{t('noDatabases')}</p> : (
-              <ul className="database-list">
-                {databases.map((name) => (
-                  <li key={name}>
-                    <button className="database-item" aria-pressed={name === database} disabled={running} onClick={() => setDatabase(name)}>
-                      <Database size={16} aria-hidden="true" /><span>{name}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <DatabaseList databases={databases} selected={database} disabled={running} onSelect={setDatabase} />
             )
           )}
         </aside>
@@ -201,6 +205,158 @@ export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }
       </div>
       {picking && <ResultPicker results={results} visible={visible} onClose={() => setPicking(false)} onApply={(next) => { setVisible(next); setPicking(false); }} />}
     </main>
+  );
+}
+
+function DatabaseList({ databases, selected, disabled, onSelect }: {
+  databases: string[];
+  selected: string;
+  disabled: boolean;
+  onSelect: (name: string) => void;
+}) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    const track = trackRef.current;
+    const list = listRef.current;
+    if (!viewport || !track || !list) return;
+
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let pageHeight = viewport.clientHeight;
+    let scrollEnd = viewport.scrollHeight - pageHeight;
+    let motion: DatabaseScrollMotion | undefined;
+    let offset = 0;
+    let frame = 0;
+    let previousFrame = 0;
+
+    const setOffset = (nextOffset: number) => {
+      if (nextOffset === offset) return;
+      offset = nextOffset;
+      if (offset === 0) list.style.removeProperty('transform');
+      else list.style.transform = `translate3d(0, ${offset}px, 0)`;
+    };
+
+    const reset = () => {
+      window.cancelAnimationFrame(frame);
+      frame = 0;
+      motion = undefined;
+      setOffset(0);
+    };
+
+    const step = (time: number) => {
+      if (!motion) return;
+      const elapsed = Math.min(32, Math.max(0, time - previousFrame));
+      previousFrame = time;
+
+      // Let the spring target recede as the wheel goes quiet, keeping its current velocity.
+      const releaseTime = Math.min(elapsed, Math.max(0, motion.idleTime + elapsed - 52));
+      motion.idleTime += elapsed;
+      motion.stretch *= Math.exp(-releaseTime / 69);
+
+      const before = motion.position;
+      const displacement = before - motion.stretch;
+      const momentum = motion.velocity + DATABASE_SPRING_RATE * displacement;
+      const decay = Math.exp(-DATABASE_SPRING_RATE * elapsed);
+      motion.position = motion.stretch + (displacement + momentum * elapsed) * decay;
+      motion.velocity = (motion.velocity - DATABASE_SPRING_RATE * momentum * elapsed) * decay;
+
+      const settled = Math.abs(motion.position) < 0.12 && motion.stretch < 0.12 &&
+        Math.abs(motion.velocity) < 0.012;
+      if (!motion.recovering && (before < 0 || motion.position < 0)) {
+        viewport.scrollTop = motion.edge + motion.direction * (settled ? 0 : Math.min(0, motion.position));
+      }
+      if (settled) {
+        reset();
+        return;
+      }
+      setOffset(-motion.direction * Math.max(0, motion.position));
+      frame = window.requestAnimationFrame(step);
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      const { deltaMode, deltaY, deltaX } = event;
+      if (reducedMotion.matches || !event.cancelable || event.ctrlKey || event.shiftKey ||
+          deltaY === 0 || Math.abs(deltaX) > Math.abs(deltaY) || scrollEnd <= 1) return;
+
+      const pixelsPerUnit = deltaMode === WheelEvent.DOM_DELTA_PAGE ? pageHeight :
+        deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
+      const direction = Math.sign(deltaY);
+      const edge = direction < 0 ? 0 : scrollEnd;
+      const distance = Math.abs(deltaY) * pixelsPerUnit;
+
+      const continuing = motion?.direction === direction && !motion.recovering ? motion : undefined;
+      if (!continuing && motion && !motion.recovering) {
+        // Let the browser scroll back into the list while the visible stretch settles.
+        motion.position = Math.max(0, motion.position);
+        motion.velocity = Math.min(0, motion.velocity);
+        motion.stretch = 0;
+        motion.recovering = true;
+      }
+
+      const remaining = continuing ? 0 : Math.max(0, direction * (edge - viewport.scrollTop));
+      const excess = distance - remaining;
+      if (excess <= 0) return;
+
+      event.preventDefault();
+      const currentStretch = continuing?.stretch ?? 0;
+      const stretch = MAX_DATABASE_STRETCH -
+        (MAX_DATABASE_STRETCH - currentStretch) * Math.exp(-excess / 140);
+      if (continuing) {
+        continuing.stretch = stretch;
+        continuing.idleTime = 0;
+        return;
+      }
+
+      motion = {
+        direction,
+        edge,
+        position: -remaining - direction * offset,
+        velocity: Math.min(distance, remaining + stretch) / 68,
+        stretch,
+        idleTime: 0,
+        recovering: false,
+      };
+      if (!frame) {
+        previousFrame = performance.now();
+        frame = window.requestAnimationFrame(step);
+      }
+    };
+
+    const resize = new ResizeObserver(() => {
+      pageHeight = viewport.clientHeight;
+      const nextEnd = viewport.scrollHeight - pageHeight;
+      if (scrollEnd !== nextEnd) reset();
+      scrollEnd = nextEnd;
+    });
+    resize.observe(viewport);
+    resize.observe(track);
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+    reducedMotion.addEventListener('change', reset);
+    return () => {
+      resize.disconnect();
+      viewport.removeEventListener('wheel', onWheel);
+      reducedMotion.removeEventListener('change', reset);
+      reset();
+    };
+  }, []);
+
+  return (
+    <div className="database-scroll" ref={viewportRef}>
+      <div className="database-scroll-track" ref={trackRef}>
+        <ul className="database-list" ref={listRef}>
+          {databases.map((name) => (
+            <li key={name}>
+              <button className="database-item" aria-pressed={name === selected} disabled={disabled} onClick={() => onSelect(name)}>
+                <Database size={16} aria-hidden="true" /><span>{name}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
   );
 }
 
