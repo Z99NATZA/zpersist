@@ -1,10 +1,25 @@
 import { useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { MSSQL, SQLDialect } from '@codemirror/lang-sql';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { Compartment, EditorState, Prec } from '@codemirror/state';
 import { drawSelection, EditorView, keymap, lineNumbers } from '@codemirror/view';
+import { tags } from '@lezer/highlight';
 import { getCM, vim } from '@replit/codemirror-vim';
 import { useI18n } from './i18n';
+
+// Include the N prefix in highlighted Unicode string literals.
+const sqlServer = SQLDialect.define({ ...MSSQL.spec, charSetCasts: true });
+const sqlHighlighting = syntaxHighlighting(HighlightStyle.define([
+  { tag: tags.keyword, color: '#004ba0' },
+  { tag: [tags.typeName, tags.standard(tags.name)], color: '#633297' },
+  { tag: tags.string, color: '#a12236' },
+  { tag: tags.special(tags.string), color: '#245f64' },
+  { tag: tags.number, color: '#985000' },
+  { tag: tags.special(tags.name), color: '#81395c' },
+  { tag: tags.comment, color: '#4e6a59' },
+]));
 
 export function selectedSql(state: EditorState): string | null {
   const ranges = state.selection.ranges.filter((range) => !range.empty);
@@ -47,6 +62,8 @@ export function SqlEditor({ editor, initialSql, vimEnabled, autoFocus, onChange,
         })),
         vimMode.of([]),
         localization.of([]),
+        sqlServer.extension,
+        sqlHighlighting,
         EditorState.allowMultipleSelections.of(true),
         EditorState.tabSize.of(4),
         drawSelection(),
