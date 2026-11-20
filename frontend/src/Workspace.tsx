@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, ReactNode, UIEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
+import type { EditorView } from '@codemirror/view';
 import { ChevronRight, Database, ListFilter, Play, Plus, RefreshCw, Table2, Terminal, X } from 'lucide-react';
 import { api, ApiError, problemFromError } from './api';
 import type { DatabaseTable, Problem, QueryResponse, ResultTable } from './api';
@@ -7,6 +8,7 @@ import { useEditorTabs } from './editorTabs';
 import type { EditorTab } from './editorTabs';
 import { ErrorNotice } from './ErrorNotice';
 import { useI18n } from './i18n';
+import { selectedSql, SqlEditor } from './SqlEditor';
 import { VerticalResizeHandle } from './VerticalResizeHandle';
 
 const MAX_VISIBLE_RESULTS = 5;
@@ -47,11 +49,6 @@ type TabQuery = {
 
 const EMPTY_QUERY: TabQuery = { running: false, response: null, visible: [], issue: null };
 
-function highlightedSql(field: HTMLTextAreaElement): string | null {
-  const { value, selectionStart, selectionEnd } = field;
-  return selectionStart === selectionEnd ? null : value.slice(selectionStart, selectionEnd).trim();
-}
-
 function hasLargeResults(results: ResultTable[], visible: number[]): boolean {
   let cells = 0;
   let textLength = 0;
@@ -69,13 +66,14 @@ function hasLargeResults(results: ResultTable[], visible: number[]): boolean {
   return false;
 }
 
-export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }: {
+export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSessionExpired }: {
   storageKey: string;
+  vimEnabled: boolean;
   issue: WorkspaceProblem | null;
   updateProblem: UpdateWorkspaceProblem;
   onSessionExpired: () => void;
 }) {
-  const { t, number } = useI18n();
+  const { t } = useI18n();
   const { state: editorTabs, update: updateEditorTabs } = useEditorTabs(storageKey);
   const { tabs, activeId } = editorTabs;
   const tab = tabs.find((item) => item.id === activeId) ?? tabs[0];
@@ -89,11 +87,10 @@ export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }
   const [selectionSize, setSelectionSize] = useState<number | null>(null);
   const [picking, setPicking] = useState(false);
   const [closingTab, setClosingTab] = useState<number | null>(null);
+  const [autoFocusEditor, setAutoFocusEditor] = useState(false);
   const databaseSelect = useRef<HTMLSelectElement>(null);
   const errorNotice = useRef<HTMLDivElement>(null);
-  const editor = useRef<HTMLTextAreaElement>(null);
-  const lineNumbers = useRef<HTMLDivElement>(null);
-  const focusEditor = useRef(false);
+  const editor = useRef<EditorView>(null);
   const activeQueries = useRef(new Map<number, AbortController>());
   const sharedIssue = issue?.source === 'tables' && issue.database !== database ? null : issue;
   const displayedIssue = queryIssue && (!sharedIssue || queryIssue.reportedAt >= sharedIssue.reportedAt)
@@ -122,10 +119,6 @@ export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }
 
   useLayoutEffect(() => {
     document.getElementById(`sql-tab-${activeId}`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    if (focusEditor.current) {
-      focusEditor.current = false;
-      editor.current?.focus({ preventScroll: true });
-    }
   }, [activeId]);
 
   useEffect(() => {
@@ -155,12 +148,13 @@ export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }
 
   function activateTab(id: number) {
     if (id === activeId) return;
+    setAutoFocusEditor(false);
     resetEditorSelection();
     updateEditorTabs((current) => ({ ...current, activeId: id }));
   }
 
   function addTab() {
-    focusEditor.current = true;
+    setAutoFocusEditor(true);
     resetEditorSelection();
     updateEditorTabs((current) => ({
       tabs: [...current.tabs, { id: current.nextId, sql: '', database }],
@@ -180,7 +174,7 @@ export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }
       return updated;
     });
     if (id === activeId) {
-      focusEditor.current = true;
+      setAutoFocusEditor(true);
       resetEditorSelection();
     }
     updateEditorTabs((current) => {
@@ -213,21 +207,10 @@ export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }
     if (name && queryIssue?.problem.code === 'database_required') updateQuery(activeId, { issue: null });
   }
 
-  function updateSelection() {
-    const field = editor.current;
-    if (field) {
-      setSelectionSize(highlightedSql(field)?.length ?? null);
-    }
-  }
-
-  function updateScroll(event: UIEvent<HTMLTextAreaElement>) {
-    if (lineNumbers.current) lineNumbers.current.scrollTop = event.currentTarget.scrollTop;
-  }
-
   async function runSql() {
-    const field = editor.current;
-    if (!field || activeQueries.current.has(activeId)) return;
-    const query = highlightedSql(field) ?? field.value.trim();
+    const state = editor.current?.state;
+    if (!state || activeQueries.current.has(activeId)) return;
+    const query = selectedSql(state) ?? state.doc.toString().trim();
     if (!query) return;
     if (!database) {
       updateQuery(activeId, { issue: { problem: { code: 'database_required' }, reportedAt: performance.now() } });
@@ -263,13 +246,6 @@ export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }
       pending.clear();
     };
   }, []);
-
-  function editorKeys(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-      event.preventDefault();
-      void runSql();
-    }
-  }
 
   const results = response?.results ?? [];
   const warnAboutResults = useMemo(() => response !== null && hasLargeResults(response.results, visible), [response, visible]);
@@ -386,22 +362,15 @@ export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }
               ><Plus size={17} aria-hidden="true" /></button>
             </div>
             <div className="editor-panel" id="sql-tab-panel" role="tabpanel" aria-labelledby={`sql-tab-${activeId}`} key={activeId}>
-              <div className="editor-body">
-                <div className="line-numbers" aria-hidden="true" ref={lineNumbers}>{sql.split('\n').map((_, index) => <div key={index}>{number(index + 1)}</div>)}</div>
-                <textarea
-                  className="workspace-scrollbar"
-                  ref={editor}
-                  aria-label={t('sqlEditor')}
-                  value={sql}
-                  onChange={(event) => { updateTab({ sql: event.target.value }); updateSelection(); }}
-                  onSelect={updateSelection}
-                  onScroll={updateScroll}
-                  onKeyDown={editorKeys}
-                  spellCheck={false}
-                  autoCapitalize="off"
-                  wrap="off"
-                />
-              </div>
+              <SqlEditor
+                editor={editor}
+                initialSql={sql}
+                vimEnabled={vimEnabled}
+                autoFocus={autoFocusEditor}
+                onChange={(value) => updateTab({ sql: value })}
+                onSelectionChange={setSelectionSize}
+                onRun={runSql}
+              />
             </div>
           </section>
 

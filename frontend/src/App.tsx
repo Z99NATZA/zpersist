@@ -11,13 +11,32 @@ import { serverKey, useLoginHistory } from './loginHistory';
 import { Workspace } from './Workspace';
 import type { WorkspaceProblem } from './Workspace';
 
+const VIM_STORAGE_KEY = 'zpersist.vimMode';
+
 export function App() {
   const { language, setLanguage, t } = useI18n();
+  const [vimEnabled, setVimEnabled] = useState(() => {
+    try {
+      return localStorage.getItem(VIM_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
   const [authError, setAuthError] = useState<Problem | null>(null);
   const [workspaceProblem, setWorkspaceProblem] = useState<WorkspaceProblem | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+
+  function toggleVim() {
+    const enabled = !vimEnabled;
+    setVimEnabled(enabled);
+    try {
+      localStorage.setItem(VIM_STORAGE_KEY, String(enabled));
+    } catch {
+      // The Vim switch also works without browser storage.
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -67,6 +86,9 @@ export function App() {
           <div><strong>zpersist</strong><span title={session?.server}>{session?.server ?? t('sqlServer')}</span></div>
         </div>
         <div className="header-actions">
+          <button type="button" className="vim-switch" role="switch" aria-checked={vimEnabled} onClick={toggleVim}>
+            Vim <span className="vim-switch-track" aria-hidden="true" />
+          </button>
           <select className="language-select" aria-label={t('language')} value={language} onChange={(event) => setLanguage(event.target.value === 'th' ? 'th' : 'en')}>
             <option value="en" lang="en">EN</option>
             <option value="th" lang="th">TH</option>
@@ -84,7 +106,7 @@ export function App() {
       {checking ? (
         <main className="sign-in-shell"><p role="status">{t('checkingSession')}</p></main>
       ) : session ? (
-        <Workspace key={storageKey} storageKey={storageKey} issue={workspaceProblem} updateProblem={updateWorkspaceProblem} onSessionExpired={sessionExpired} />
+        <Workspace key={storageKey} storageKey={storageKey} vimEnabled={vimEnabled} issue={workspaceProblem} updateProblem={updateWorkspaceProblem} onSessionExpired={sessionExpired} />
       ) : (
         <SignIn initialError={authError} onSignedIn={(value) => { setAuthError(null); setWorkspaceProblem(null); setSession(value); }} />
       )}

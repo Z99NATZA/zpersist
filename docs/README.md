@@ -59,5 +59,6 @@ make down
 | Document | Contents |
 |---|---|
 | [Architecture](architecture.md) | Deployment, browser state, sessions, SQL execution, API routes, and runtime settings |
+| [Vim mode](vim.md) | Editor modes, keybindings, and SQL execution shortcuts |
 | [Docs format guide](docs-format-guide.md) | Formatting examples for repository documentation |
 | [Commit guide](commit-guide.md) | Commit message convention |

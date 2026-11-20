@@ -67,6 +67,34 @@ button:focus-visible, input:focus-visible, select:focus-visible, .table-scroll:f
 }
 .account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 18ch; }
 .header-actions { flex: 0 0 auto; gap: 6px; }
+.vim-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: .875rem;
+}
+.vim-switch-track {
+  display: flex;
+  align-items: center;
+  width: 25px;
+  height: 14px;
+  padding: 2px;
+  border-radius: 10px;
+  background: #657e97;
+}
+.vim-switch-track::after {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--white);
+  content: "";
+}
+.vim-switch[aria-checked="true"] .vim-switch-track { justify-content: flex-end; background: var(--blue); }
 .language-select {
   min-height: 32px;
   padding: 4px 6px;
@@ -401,31 +429,44 @@ button:focus-visible, input:focus-visible, select:focus-visible, .table-scroll:f
 .editor-tab-label:focus-visible, .editor-tab-close:focus-visible { outline-offset: -2px; }
 .editor-tab-add { margin-bottom: 2px; }
 .editor-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
-.editor-body { display: flex; flex: 1; min-height: 0; background: var(--white); }
-.line-numbers, .editor-body textarea { font: .875rem / 1.65 var(--mono); padding: 12px; }
-.line-numbers {
-  flex: 0 0 3.8em;
-  overflow: hidden;
-  text-align: right;
-  color: #587694;
-  background: #f7faff;
-  border-right: 1px solid #e7eef7;
-  user-select: none;
+.editor-body { flex: 1; min-height: 0; background: var(--white); }
+.editor-body .cm-editor { height: 100%; color: #153c62; }
+.editor-body .cm-focused { outline: 1px solid #89b9e8; outline-offset: -1px; }
+.editor-body .cm-scroller { font: .875rem / 1.65 var(--mono); }
+.editor-body .cm-content { padding-block: 12px; }
+.editor-body .cm-line { padding-inline: 12px; }
+.editor-body .cm-gutters { color: #587694; background: #f7faff; border-color: #e7eef7; }
+.editor-body .cm-lineNumbers { min-width: 3.8em; }
+.editor-body .cm-lineNumbers .cm-gutterElement { padding-inline: 8px 12px; }
+.editor-body .cm-focused .cm-selectionLayer .cm-selectionBackground,
+.editor-body[data-vim-mode] .cm-editor .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
+  background: #bddcff;
 }
-.editor-body textarea {
-  width: 100%;
-  min-width: 0;
-  height: 100%;
-  border: 0;
-  border-radius: 0;
-  resize: none;
-  background: var(--white);
-  color: #153c62;
-  tab-size: 4;
+.editor-body .cm-panels-bottom { border-top: 1px solid #e7eef7; background: #f7faff; }
+.editor-body .cm-vim-panel {
+  padding: 2px 12px;
+  color: #4e647b;
+  font: .75rem / 1.65 var(--mono);
 }
-.editor-body textarea:focus-visible { outline: 1px solid #89b9e8; outline-offset: -1px; }
+/* CodeMirror renders the mode label as the first span and prompts in a div. */
+.editor-body .cm-vim-panel > span:first-child {
+  align-self: center;
+  padding-inline: 6px;
+  border-radius: 4px;
+  background: var(--vim-tag-background, #dceeff);
+  white-space: nowrap;
+}
+.editor-body[data-vim-mode="insert"] .cm-vim-panel { --vim-tag-background: #e1f5e8; }
+.editor-body[data-vim-mode="visual"] .cm-vim-panel { --vim-tag-background: #eee5fc; }
+.editor-body[data-vim-mode="linewise"] .cm-vim-panel { --vim-tag-background: #fff0cf; }
+.editor-body[data-vim-mode="blockwise"] .cm-vim-panel { --vim-tag-background: #fae5f3; }
+.editor-body[data-vim-mode="replace"] .cm-vim-panel { --vim-tag-background: #fce4e3; }
+.editor-body .cm-vim-panel input { color: inherit; }
+.editor-body[data-vim-mode] .cm-editor.cm-focused .cm-fat-cursor { background: #a9cbee; }
+.editor-body[data-vim-mode] .cm-editor:not(.cm-focused) .cm-fat-cursor { outline-color: var(--blue); }
+.editor-body[data-vim-mode] .cm-scroller .cm-cursor { border-left-color: var(--blue); }
 @container editor (max-height: 112px) {
-  .line-numbers, .editor-body textarea { padding-block: 6px; }
+  .editor-body .cm-content { padding-block: 6px; }
 }
 
 .vertical-resize-handle {
