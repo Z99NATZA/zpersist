@@ -1,6 +1,7 @@
 {
   "messages": {
     "language": "Language",
+    "theme": "Theme",
     "sqlServer": "SQL Server",
     "checkingSession": "Checking your session…",
     "signIn": "Sign in",

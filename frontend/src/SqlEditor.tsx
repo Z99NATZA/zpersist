@@ -12,13 +12,13 @@ import { useI18n } from './i18n';
 // Include the N prefix in highlighted Unicode string literals.
 const sqlServer = SQLDialect.define({ ...MSSQL.spec, charSetCasts: true });
 const sqlHighlighting = syntaxHighlighting(HighlightStyle.define([
-  { tag: tags.keyword, color: '#004ba0' },
-  { tag: [tags.typeName, tags.standard(tags.name)], color: '#633297' },
-  { tag: tags.string, color: '#a12236' },
-  { tag: tags.special(tags.string), color: '#245f64' },
-  { tag: tags.number, color: '#985000' },
-  { tag: tags.special(tags.name), color: '#81395c' },
-  { tag: tags.comment, color: '#4e6a59' },
+  { tag: tags.keyword, color: 'var(--sql-keyword, #004ba0)' },
+  { tag: [tags.typeName, tags.standard(tags.name)], color: 'var(--sql-type, #633297)' },
+  { tag: tags.string, color: 'var(--sql-string, #a12236)' },
+  { tag: tags.special(tags.string), color: 'var(--sql-identifier, #245f64)' },
+  { tag: tags.number, color: 'var(--sql-number, #985000)' },
+  { tag: tags.special(tags.name), color: 'var(--sql-variable, #81395c)' },
+  { tag: tags.comment, color: 'var(--sql-comment, #4e6a59)' },
 ]));
 
 export function selectedSql(state: EditorState): string | null {

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Database, LockKeyhole, LogOut } from 'lucide-react';
+import { Database, Languages, LockKeyhole, LogOut, Palette } from 'lucide-react';
 import { api, ApiError, problemFromError } from './api';
 import type { Problem, Session } from './api';
 import { ErrorNotice } from './ErrorNotice';
+import { HeaderMenu } from './HeaderMenu';
 import { HistoryInput } from './HistoryInput';
 import { editorStorageKey } from './editorTabs';
 import { useI18n } from './i18n';
@@ -12,9 +13,21 @@ import { Workspace } from './Workspace';
 import type { WorkspaceProblem } from './Workspace';
 
 const VIM_STORAGE_KEY = 'zpersist.vimMode';
+const THEME_STORAGE_KEY = 'zpersist.theme';
+type Theme = 'default' | 'one-half-gray';
+
+function initialTheme(): Theme {
+  try {
+    if (localStorage.getItem(THEME_STORAGE_KEY) === 'one-half-gray') return 'one-half-gray';
+  } catch {
+    // The theme switch also works without browser storage.
+  }
+  return 'default';
+}
 
 export function App() {
   const { language, setLanguage, t } = useI18n();
+  const [theme, setTheme] = useState(initialTheme);
   const [vimEnabled, setVimEnabled] = useState(() => {
     try {
       return localStorage.getItem(VIM_STORAGE_KEY) === 'true';
@@ -37,6 +50,20 @@ export function App() {
       // The Vim switch also works without browser storage.
     }
   }
+
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute(
+      'content',
+      getComputedStyle(root).getPropertyValue('--browser-theme-color').trim(),
+    );
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Keep the current theme for this page.
+    }
+  }, [theme]);
 
   useEffect(() => {
     let active = true;
@@ -89,15 +116,31 @@ export function App() {
           <button type="button" className="vim-switch" role="switch" aria-checked={vimEnabled} onClick={toggleVim}>
             Vim <span className="vim-switch-track" aria-hidden="true" />
           </button>
-          <select className="language-select" aria-label={t('language')} value={language} onChange={(event) => setLanguage(event.target.value === 'th' ? 'th' : 'en')}>
-            <option value="en" lang="en">EN</option>
-            <option value="th" lang="th">TH</option>
-          </select>
+          <HeaderMenu
+            label={t('theme')}
+            icon={Palette}
+            value={theme}
+            onChange={setTheme}
+            options={[
+              { value: 'default', label: 'default', lang: 'en' },
+              { value: 'one-half-gray', label: 'one half gray', lang: 'en' },
+            ]}
+          />
+          <HeaderMenu
+            label={t('language')}
+            icon={Languages}
+            value={language}
+            onChange={setLanguage}
+            options={[
+              { value: 'en', label: 'English', lang: 'en' },
+              { value: 'th', label: 'ไทย', lang: 'th' },
+            ]}
+          />
           {session && (
             <div className="account">
               <span className="account-name">{session.username}</span>
-              <button className="button button-quiet" onClick={logOut} disabled={signingOut}>
-                <LogOut size={16} aria-hidden="true" /> {t('signOut')}
+              <button className="button button-quiet sign-out" onClick={logOut} disabled={signingOut} aria-label={t('signOut')}>
+                <LogOut size={16} aria-hidden="true" /> <span>{t('signOut')}</span>
               </button>
             </div>
           )}

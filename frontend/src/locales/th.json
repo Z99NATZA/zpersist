@@ -1,6 +1,7 @@
 {
   "messages": {
     "language": "ภาษา",
+    "theme": "ธีม",
     "sqlServer": "SQL Server",
     "checkingSession": "กำลังเช็กว่าเคยล็อกอินไว้ไหม…",
     "signIn": "ล็อกอิน",
