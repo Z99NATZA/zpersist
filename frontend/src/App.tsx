@@ -5,6 +5,7 @@ import { api, ApiError, problemFromError } from './api';
 import type { Problem, Session } from './api';
 import { ErrorNotice } from './ErrorNotice';
 import { HistoryInput } from './HistoryInput';
+import { editorStorageKey } from './editorTabs';
 import { useI18n } from './i18n';
 import { serverKey, useLoginHistory } from './loginHistory';
 import { Workspace } from './Workspace';
@@ -38,7 +39,8 @@ export function App() {
   }, []);
 
   const updateWorkspaceProblem = useCallback((source: WorkspaceProblem['source'], problem: Problem | null, database?: string) => {
-    setWorkspaceProblem((current) => problem ? { source, problem, database } : current?.source === source ? null : current);
+    const reportedAt = performance.now();
+    setWorkspaceProblem((current) => problem ? { source, problem, database, reportedAt } : current?.source === source ? null : current);
   }, []);
 
   async function logOut() {
@@ -54,6 +56,8 @@ export function App() {
       setSigningOut(false);
     }
   }
+
+  const storageKey = session ? editorStorageKey(session) : '';
 
   return (
     <div className="app">
@@ -80,7 +84,7 @@ export function App() {
       {checking ? (
         <main className="sign-in-shell"><p role="status">{t('checkingSession')}</p></main>
       ) : session ? (
-        <Workspace issue={workspaceProblem} updateProblem={updateWorkspaceProblem} onSessionExpired={sessionExpired} />
+        <Workspace key={storageKey} storageKey={storageKey} issue={workspaceProblem} updateProblem={updateWorkspaceProblem} onSessionExpired={sessionExpired} />
       ) : (
         <SignIn initialError={authError} onSignedIn={(value) => { setAuthError(null); setWorkspaceProblem(null); setSession(value); }} />
       )}

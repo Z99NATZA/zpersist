@@ -1,8 +1,10 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode, UIEvent } from 'react';
-import { ChevronRight, Database, ListFilter, Play, RefreshCw, Table2, Terminal } from 'lucide-react';
+import { ChevronRight, Database, ListFilter, Play, Plus, RefreshCw, Table2, Terminal, X } from 'lucide-react';
 import { api, ApiError, problemFromError } from './api';
 import type { DatabaseTable, Problem, QueryResponse, ResultTable } from './api';
+import { useEditorTabs } from './editorTabs';
+import type { EditorTab } from './editorTabs';
 import { ErrorNotice } from './ErrorNotice';
 import { useI18n } from './i18n';
 import { VerticalResizeHandle } from './VerticalResizeHandle';
@@ -12,7 +14,6 @@ const RESULT_PREVIEW_ROWS = 3;
 const RESULT_PREVIEW_PEEK_HEIGHT = 18;
 const RESULT_WARNING_CELLS = 10_000;
 const RESULT_WARNING_TEXT_LENGTH = 1_000_000;
-const INITIAL_SQL = 'SELECT DB_NAME() AS [database_name];\nSELECT SYSDATETIME() AS [server_time];';
 const MAX_EXPLORER_STRETCH = 26;
 const EXPLORER_SPRING_RATE = 0.038;
 
@@ -25,13 +26,26 @@ type ExplorerScrollMotion = {
   idleTime: number;
 };
 
-export type WorkspaceProblem = {
-  source: 'databases' | 'tables' | 'query' | 'logout';
+type ReportedProblem = {
   problem: Problem;
+  reportedAt: number;
+};
+
+export type WorkspaceProblem = ReportedProblem & {
+  source: 'databases' | 'tables' | 'logout';
   database?: string;
 };
 
 type UpdateWorkspaceProblem = (source: WorkspaceProblem['source'], problem: Problem | null, database?: string) => void;
+
+type TabQuery = {
+  running: boolean;
+  response: QueryResponse | null;
+  visible: number[];
+  issue: ReportedProblem | null;
+};
+
+const EMPTY_QUERY: TabQuery = { running: false, response: null, visible: [], issue: null };
 
 function highlightedSql(field: HTMLTextAreaElement): string | null {
   const { value, selectionStart, selectionEnd } = field;
@@ -55,29 +69,35 @@ function hasLargeResults(results: ResultTable[], visible: number[]): boolean {
   return false;
 }
 
-export function Workspace({ issue, updateProblem, onSessionExpired }: {
+export function Workspace({ storageKey, issue, updateProblem, onSessionExpired }: {
+  storageKey: string;
   issue: WorkspaceProblem | null;
   updateProblem: UpdateWorkspaceProblem;
   onSessionExpired: () => void;
 }) {
   const { t, number } = useI18n();
+  const { state: editorTabs, update: updateEditorTabs } = useEditorTabs(storageKey);
+  const { tabs, activeId } = editorTabs;
+  const tab = tabs.find((item) => item.id === activeId) ?? tabs[0];
+  const { sql, database } = tab;
+  const [queries, setQueries] = useState<Record<number, TabQuery>>({});
+  const { running, response, visible, issue: queryIssue } = queries[activeId] ?? EMPTY_QUERY;
   const [databases, setDatabases] = useState<string[] | null>(null);
-  const [database, setDatabase] = useState('');
   const [databasesOpen, setDatabasesOpen] = useState(true);
   const [tablesOpen, setTablesOpen] = useState(true);
   const [loadingDatabases, setLoadingDatabases] = useState(true);
-  const [sql, setSql] = useState(INITIAL_SQL);
   const [selectionSize, setSelectionSize] = useState<number | null>(null);
-  const [running, setRunning] = useState(false);
-  const [response, setResponse] = useState<QueryResponse | null>(null);
-  const [visible, setVisible] = useState<number[]>([]);
   const [picking, setPicking] = useState(false);
+  const [closingTab, setClosingTab] = useState<number | null>(null);
   const databaseSelect = useRef<HTMLSelectElement>(null);
   const errorNotice = useRef<HTMLDivElement>(null);
   const editor = useRef<HTMLTextAreaElement>(null);
   const lineNumbers = useRef<HTMLDivElement>(null);
-  const activeQuery = useRef<AbortController | null>(null);
-  const displayedIssue = issue?.source === 'tables' && issue.database !== database ? null : issue;
+  const focusEditor = useRef(false);
+  const activeQueries = useRef(new Map<number, AbortController>());
+  const sharedIssue = issue?.source === 'tables' && issue.database !== database ? null : issue;
+  const displayedIssue = queryIssue && (!sharedIssue || queryIssue.reportedAt >= sharedIssue.reportedAt)
+    ? queryIssue : sharedIssue;
   const databaseRequired = displayedIssue?.problem.code === 'database_required';
 
   const loadDatabases = useCallback(async () => {
@@ -86,16 +106,27 @@ export function Workspace({ issue, updateProblem, onSessionExpired }: {
     try {
       const list = await api<string[]>('/databases');
       setDatabases(list);
-      setDatabase((current) => list.includes(current) ? current : '');
+      const available = new Set(list);
+      updateEditorTabs((current) => current.tabs.some((item) => item.database && !available.has(item.database)) ?
+        { ...current, tabs: current.tabs.map((item) => available.has(item.database) || !item.database ? item : { ...item, database: '' }) } :
+        current);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onSessionExpired();
       else updateProblem('databases', problemFromError(error));
     } finally {
       setLoadingDatabases(false);
     }
-  }, [onSessionExpired, updateProblem]);
+  }, [onSessionExpired, updateEditorTabs, updateProblem]);
 
   useEffect(() => { void loadDatabases(); }, [loadDatabases]);
+
+  useLayoutEffect(() => {
+    document.getElementById(`sql-tab-${activeId}`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (focusEditor.current) {
+      focusEditor.current = false;
+      editor.current?.focus({ preventScroll: true });
+    }
+  }, [activeId]);
 
   useEffect(() => {
     if (!displayedIssue) return;
@@ -106,10 +137,80 @@ export function Workspace({ issue, updateProblem, onSessionExpired }: {
     target?.focus({ preventScroll: true });
   }, [displayedIssue, databaseRequired]);
 
+  function updateTab(change: Partial<Pick<EditorTab, 'sql' | 'database'>>) {
+    updateEditorTabs((current) => ({
+      ...current,
+      tabs: current.tabs.map((item) => item.id === activeId ? { ...item, ...change } : item),
+    }));
+  }
+
+  function updateQuery(id: number, change: Partial<TabQuery>) {
+    setQueries((current) => ({ ...current, [id]: { ...(current[id] ?? EMPTY_QUERY), ...change } }));
+  }
+
+  function resetEditorSelection() {
+    setSelectionSize(null);
+    setPicking(false);
+  }
+
+  function activateTab(id: number) {
+    if (id === activeId) return;
+    resetEditorSelection();
+    updateEditorTabs((current) => ({ ...current, activeId: id }));
+  }
+
+  function addTab() {
+    focusEditor.current = true;
+    resetEditorSelection();
+    updateEditorTabs((current) => ({
+      tabs: [...current.tabs, { id: current.nextId, sql: '', database }],
+      activeId: current.nextId,
+      nextId: current.nextId + 1,
+    }));
+  }
+
+  function confirmCloseTab() {
+    if (closingTab === null || tabs.length < 2) return;
+    const id = closingTab;
+    activeQueries.current.get(id)?.abort();
+    activeQueries.current.delete(id);
+    setQueries((current) => {
+      const updated = { ...current };
+      delete updated[id];
+      return updated;
+    });
+    if (id === activeId) {
+      focusEditor.current = true;
+      resetEditorSelection();
+    }
+    updateEditorTabs((current) => {
+      const index = current.tabs.findIndex((item) => item.id === id);
+      const remaining = current.tabs.filter((item) => item.id !== id);
+      const activeId = current.activeId === id ? remaining[Math.min(index, remaining.length - 1)].id : current.activeId;
+      return { ...current, tabs: remaining, activeId };
+    });
+    setClosingTab(null);
+  }
+
+  function tabTitle(id: number) {
+    return id === 1 ? t('queryEditor') : t('numberedQueryTab', { number: id });
+  }
+
+  function tabKeys(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const { key } = event;
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
+    event.preventDefault();
+    const last = tabs.length - 1;
+    const next = key === 'Home' ? 0 : key === 'End' ? last :
+      (index + (key === 'ArrowLeft' ? last : 1)) % tabs.length;
+    activateTab(tabs[next].id);
+    document.getElementById(`sql-tab-${tabs[next].id}`)?.focus({ preventScroll: true });
+  }
+
   function chooseDatabase(name: string) {
-    setDatabase(name);
+    updateTab({ database: name });
     if (name !== database) updateProblem('tables', null);
-    if (name && databaseRequired) updateProblem('query', null);
+    if (name && queryIssue?.problem.code === 'database_required') updateQuery(activeId, { issue: null });
   }
 
   function updateSelection() {
@@ -125,39 +226,43 @@ export function Workspace({ issue, updateProblem, onSessionExpired }: {
 
   async function runSql() {
     const field = editor.current;
-    if (!field || activeQuery.current) return;
+    if (!field || activeQueries.current.has(activeId)) return;
     const query = highlightedSql(field) ?? field.value.trim();
     if (!query) return;
     if (!database) {
-      updateProblem('query', { code: 'database_required' });
+      updateQuery(activeId, { issue: { problem: { code: 'database_required' }, reportedAt: performance.now() } });
       return;
     }
 
     const controller = new AbortController();
-    activeQuery.current = controller;
-    setRunning(true);
-    updateProblem('query', null);
-    setResponse(null);
-    setVisible([]);
+    activeQueries.current.set(activeId, controller);
+    updateQuery(activeId, { ...EMPTY_QUERY, running: true });
     try {
       const data = await api<QueryResponse>('/query', {
         method: 'POST',
         body: { database, sql: query },
         signal: controller.signal,
       });
-      setResponse(data);
-      setVisible(data.results.slice(0, MAX_VISIBLE_RESULTS).map((_, index) => index));
+      if (!controller.signal.aborted) {
+        updateQuery(activeId, { response: data, visible: data.results.slice(0, MAX_VISIBLE_RESULTS).map((_, index) => index) });
+      }
     } catch (error) {
       if (controller.signal.aborted) return;
       if (error instanceof ApiError && error.status === 401) onSessionExpired();
-      else updateProblem('query', problemFromError(error));
+      else updateQuery(activeId, { issue: { problem: problemFromError(error), reportedAt: performance.now() } });
     } finally {
-      activeQuery.current = null;
-      if (!controller.signal.aborted) setRunning(false);
+      if (activeQueries.current.get(activeId) === controller) activeQueries.current.delete(activeId);
+      if (!controller.signal.aborted) updateQuery(activeId, { running: false });
     }
   }
 
-  useEffect(() => () => { activeQuery.current?.abort(); }, []);
+  useEffect(() => {
+    const pending = activeQueries.current;
+    return () => {
+      pending.forEach((controller) => controller.abort());
+      pending.clear();
+    };
+  }, []);
 
   function editorKeys(event: KeyboardEvent<HTMLTextAreaElement>) {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
@@ -243,29 +348,60 @@ export function Workspace({ issue, updateProblem, onSessionExpired }: {
         </aside>
 
         <div className="work-area">
-          <section className="editor-pane" id="editor-pane" aria-labelledby="editor-title">
+          <section className="editor-pane" id="editor-pane" aria-label={t('queryEditor')}>
             <div className="editor-tabs">
-              <div className="editor-tab"><Terminal size={15} aria-hidden="true" /><h1 id="editor-title">{t('queryEditor')}</h1></div>
+              <div className="editor-tab-list" role="tablist" aria-label={t('queryEditor')}>
+                {tabs.map((item, index) => (
+                  <div className="editor-tab" role="presentation" key={item.id} data-active={item.id === activeId}>
+                    <button
+                      type="button"
+                      className="editor-tab-label"
+                      id={`sql-tab-${item.id}`}
+                      role="tab"
+                      aria-selected={item.id === activeId}
+                      aria-controls="sql-tab-panel"
+                      tabIndex={item.id === activeId ? 0 : -1}
+                      onClick={() => activateTab(item.id)}
+                      onKeyDown={(event) => tabKeys(event, index)}
+                    >
+                      <Terminal size={15} aria-hidden="true" />
+                      <span>{tabTitle(item.id)}</span>
+                    </button>
+                    {tabs.length > 1 && (
+                      <button
+                        type="button"
+                        className="editor-tab-close"
+                        aria-label={t('closeQueryTab', { tab: tabTitle(item.id) })}
+                        onClick={() => setClosingTab(item.id)}
+                      ><X size={14} aria-hidden="true" /></button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="button icon-button editor-tab-add"
+                aria-label={t('newQueryTab')}
+                onClick={addTab}
+              ><Plus size={17} aria-hidden="true" /></button>
             </div>
-            <div className="editor-body">
-              <div className="line-numbers" aria-hidden="true" ref={lineNumbers}>{sql.split('\n').map((_, index) => <div key={index}>{number(index + 1)}</div>)}</div>
-              <textarea
-                className="workspace-scrollbar"
-                ref={editor}
-                aria-label={t('sqlEditor')}
-                value={sql}
-                onChange={(event) => { setSql(event.target.value); updateSelection(); }}
-                onSelect={updateSelection}
-                onScroll={updateScroll}
-                onKeyDown={editorKeys}
-                spellCheck={false}
-                autoCapitalize="off"
-                wrap="off"
-              />
-            </div>
-            <div className="editor-status">
-              <span>{selectionSize ? t(selectionSize === 1 ? 'selectedCharacter' : 'selectedCharacters', { count: selectionSize }) : t('highlightSql')}</span>
-              <kbd>{t('keyboardShortcut')}</kbd>
+            <div className="editor-panel" id="sql-tab-panel" role="tabpanel" aria-labelledby={`sql-tab-${activeId}`} key={activeId}>
+              <div className="editor-body">
+                <div className="line-numbers" aria-hidden="true" ref={lineNumbers}>{sql.split('\n').map((_, index) => <div key={index}>{number(index + 1)}</div>)}</div>
+                <textarea
+                  className="workspace-scrollbar"
+                  ref={editor}
+                  aria-label={t('sqlEditor')}
+                  value={sql}
+                  onChange={(event) => { updateTab({ sql: event.target.value }); updateSelection(); }}
+                  onSelect={updateSelection}
+                  onScroll={updateScroll}
+                  onKeyDown={editorKeys}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  wrap="off"
+                />
+              </div>
             </div>
           </section>
 
@@ -282,7 +418,7 @@ export function Workspace({ issue, updateProblem, onSessionExpired }: {
                 {results.length ? t('chooseResultsCount', { visible: visible.length, total: results.length }) : t('chooseResults')}
               </button>
             </div>
-            <div className="results-scroll workspace-scrollbar" role="region" aria-labelledby="results-title" tabIndex={0}>
+            <div className="results-scroll workspace-scrollbar" role="region" aria-labelledby="results-title" tabIndex={0} key={activeId}>
               <div className="results-content">
                 {displayedIssue && (
                   <div className="workspace-notice" id="workspace-notice" ref={errorNotice} tabIndex={-1}>
@@ -316,8 +452,40 @@ export function Workspace({ issue, updateProblem, onSessionExpired }: {
           </section>
         </div>
       </div>
-      {picking && <ResultPicker results={results} visible={visible} onClose={() => setPicking(false)} onApply={(next) => { setVisible(next); setPicking(false); }} />}
+      {picking && <ResultPicker results={results} visible={visible} onClose={() => setPicking(false)} onApply={(next) => { updateQuery(activeId, { visible: next }); setPicking(false); }} />}
+      {closingTab !== null && (
+        <CloseTabDialog name={tabTitle(closingTab)} onCancel={() => setClosingTab(null)} onConfirm={confirmCloseTab} />
+      )}
     </main>
+  );
+}
+
+function CloseTabDialog({ name, onCancel, onConfirm }: {
+  name: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useI18n();
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+
+  return (
+    <dialog
+      ref={dialog}
+      className="result-dialog"
+      aria-labelledby="close-tab-title"
+      aria-describedby="close-tab-description"
+      onClose={onCancel}
+    >
+      <div className="dialog-header"><h2 id="close-tab-title">{t('confirmCloseQueryTab', { tab: name })}</h2></div>
+      <p className="dialog-description" id="close-tab-description">{t('closeQueryTabWarning')}</p>
+      <div className="dialog-footer close-tab-footer">
+        <div>
+          <button type="button" className="button button-secondary" onClick={() => dialog.current?.close()} autoFocus>{t('cancel')}</button>
+          <button type="button" className="button button-primary" onClick={onConfirm}>{t('closeTab')}</button>
+        </div>
+      </div>
+    </dialog>
   );
 }
 
