@@ -52,6 +52,9 @@ enum ErrorCode {
     PermissionDenied,
     QueryFailed,
     QueryTimeout,
+    ResultEditUnavailable,
+    ResultEditConflict,
+    ResultEditTooLarge,
     NotFound,
     Internal,
 }
@@ -142,6 +145,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/databases", get(database::list))
         .route("/tables", get(database::list_tables))
         .route("/query", post(database::query))
+        .route("/query/edits", post(database::edits::save))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, ErrorCode::NotFound) })
         .layer(middleware::map_response(async |mut response: Response| {
             response

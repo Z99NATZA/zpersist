@@ -1,3 +1,4 @@
+pub mod edits;
 mod selection;
 
 use crate::{ApiError, AppState, ErrorCode, setting};
@@ -251,7 +252,11 @@ fn database_identifier(database: &str) -> Result<String, ApiError> {
     if database.is_empty() || database.encode_utf16().count() > 128 || database.contains('\0') {
         return Err(ApiError::bad_request(ErrorCode::InvalidDatabase));
     }
-    Ok(format!("[{}]", database.replace(']', "]]")))
+    Ok(quote_identifier(database))
+}
+
+fn quote_identifier(name: &str) -> String {
+    format!("[{}]", name.replace(']', "]]"))
 }
 
 #[derive(Deserialize)]
@@ -312,6 +317,10 @@ struct ResultTable {
     columns: Vec<String>,
     rows: Vec<Vec<Option<String>>>,
     truncated: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    clipped: Vec<[usize; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    editable: Option<edits::EditableResult>,
 }
 
 pub async fn query(
@@ -325,15 +334,39 @@ pub async fn query(
         .as_deref()
         .filter(|name| !name.is_empty())
         .unwrap_or(DEFAULT_DATABASE);
-    let batch = selection::prepare(database, &request.sql)?;
+    let selection = selection::prepare(database, &request.sql)?;
     let started = Instant::now();
-    let results = session
+    let mut results = session
         .database
-        .run(async |client| collect_results(client, &batch).await)
+        .run(async |client| collect_results(client, &selection.batch).await)
         .await?;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if results.len() == selection.editable_queries.len()
+        && results
+            .iter()
+            .zip(&selection.editable_queries)
+            .any(|(result, query)| !result.rows.is_empty() && query.is_some())
+    {
+        // Metadata lookup is optional and must not delay or fail an otherwise successful SELECT.
+        let _ = timeout(
+            Duration::from_secs(2),
+            session.database.run(async |client| {
+                for (result, query) in results.iter_mut().zip(&selection.editable_queries) {
+                    if let Some((database, query)) = query
+                        && !result.rows.is_empty()
+                    {
+                        result.editable =
+                            edits::describe(client, database, query, &result.columns).await?;
+                    }
+                }
+                Ok(())
+            }),
+        )
+        .await;
+    }
     Ok(Json(QueryResponse {
         results,
-        elapsed_ms: started.elapsed().as_millis() as u64,
+        elapsed_ms,
     }))
 }
 
@@ -355,6 +388,8 @@ async fn collect_results(
                     .collect(),
                 rows: Vec::new(),
                 truncated: false,
+                clipped: Vec::new(),
+                editable: None,
             }),
             QueryItem::Row(row) => {
                 let result = &mut results[row.result_index()];
@@ -362,7 +397,17 @@ async fn collect_results(
                     result.truncated = true;
                     continue;
                 }
-                let cells: Vec<_> = row.into_iter().map(format_cell).collect::<Result<_, _>>()?;
+                let mut clipped = Vec::new();
+                let cells: Vec<_> = row
+                    .into_iter()
+                    .enumerate()
+                    .map(|(column, value)| {
+                        if is_clipped(&value) {
+                            clipped.push([result.rows.len(), column]);
+                        }
+                        format_cell(value)
+                    })
+                    .collect::<Result<_, _>>()?;
                 let row_bytes = cells
                     .iter()
                     .map(|cell| 8 + cell.as_ref().map_or(0, String::len))
@@ -372,6 +417,7 @@ async fn collect_results(
                 } else {
                     remaining -= row_bytes;
                     result.rows.push(cells);
+                    result.clipped.extend(clipped);
                 }
             }
         }
@@ -394,6 +440,15 @@ fn preview_text(text: &str) -> String {
         text.to_owned()
     } else {
         format!("{}…", &text[..text.floor_char_boundary(CELL_BYTES)])
+    }
+}
+
+fn is_clipped(value: &ColumnData<'_>) -> bool {
+    match value {
+        ColumnData::String(Some(value)) => value.len() > CELL_BYTES,
+        ColumnData::Xml(Some(value)) => value.as_ref().as_ref().len() > CELL_BYTES,
+        ColumnData::Binary(Some(value)) => value.len() > (CELL_BYTES - 2) / 2,
+        _ => false,
     }
 }
 

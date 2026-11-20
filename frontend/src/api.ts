@@ -8,10 +8,26 @@ export interface DatabaseTable {
   name: string;
 }
 
+export type CellValue = string | null;
+
+export interface EditableColumn {
+  column: string;
+  nullable: boolean;
+}
+
+export interface EditableResult {
+  table: DatabaseTable & { database: string };
+  object_id: number;
+  key: { column: string; index: number }[];
+  columns: (EditableColumn | null)[];
+}
+
 export interface ResultTable {
   columns: string[];
-  rows: (string | null)[][];
+  rows: CellValue[][];
   truncated: boolean;
+  clipped?: [row: number, column: number][];
+  editable?: EditableResult;
 }
 
 export interface QueryResponse {

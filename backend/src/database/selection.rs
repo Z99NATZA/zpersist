@@ -2,7 +2,7 @@ use super::database_identifier;
 use crate::{ApiError, ErrorCode};
 use serde_json::json;
 use sqlparser::{
-    ast::{Select, Statement, Use, Visit, Visitor},
+    ast::{Query, Select, SetExpr, Statement, TableFactor, Use, Visit, Visitor},
     dialect::MsSqlDialect,
     parser::{Parser, ParserOptions},
 };
@@ -10,8 +10,13 @@ use std::ops::ControlFlow;
 
 const SQL_BYTES: usize = 24 * 1024;
 
-pub fn prepare(database: &str, sql: &str) -> Result<String, ApiError> {
-    let database = database_identifier(database)?;
+pub struct Selection {
+    pub batch: String,
+    pub editable_queries: Vec<Option<(String, String)>>,
+}
+
+pub fn prepare(database: &str, sql: &str) -> Result<Selection, ApiError> {
+    let identifier = database_identifier(database)?;
     if sql.len() > SQL_BYTES {
         return Err(ApiError::bad_request(ErrorCode::SqlTooLarge)
             .with_params(json!({ "limit": SQL_BYTES / 1024 })));
@@ -39,8 +44,38 @@ pub fn prepare(database: &str, sql: &str) -> Result<String, ApiError> {
         return Err(ApiError::bad_request(ErrorCode::NoSelect));
     }
 
+    let mut context = database;
+    let mut editable_queries = Vec::new();
+    for statement in &statements {
+        match statement {
+            Statement::Use(Use::Object(name)) => context = &name.0[0].as_ident().unwrap().value,
+            Statement::Query(query) => {
+                editable_queries
+                    .push(editable(query).then(|| (context.to_owned(), query.to_string())));
+            }
+            _ => {}
+        }
+    }
+
     // The first USE sets the context on every checkout, even after an override on this connection.
-    Ok(format!("USE {database};\n{sql}"))
+    Ok(Selection {
+        batch: format!("USE {identifier};\n{sql}"),
+        editable_queries,
+    })
+}
+
+fn editable(query: &Query) -> bool {
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return false;
+    };
+    query.with.is_none()
+        && query.for_clause.is_none()
+        && select.distinct.is_none()
+        && matches!(
+            select.from.as_slice(),
+            [table] if table.joins.is_empty()
+                && matches!(&table.relation, TableFactor::Table { name, args: None, version: None, .. } if name.0.len() <= 3)
+        )
 }
 
 struct ReadOnly;
@@ -74,9 +109,13 @@ mod tests {
     #[test]
     fn supports_context_override_and_multiple_selects() {
         let sql = "SELECT DB_NAME(); USE [other db]\nSELECT TOP (1) * FROM dbo.[items];";
+        let selection = prepare("a]b", sql).ok().expect("valid SQL");
+        assert_eq!(selection.batch, format!("USE [a]]b];\n{sql}"));
+        assert_eq!(selection.editable_queries.len(), 2);
+        assert!(selection.editable_queries[0].is_none());
         assert_eq!(
-            prepare("a]b", sql).ok(),
-            Some(format!("USE [a]]b];\n{sql}"))
+            selection.editable_queries[1].as_ref().unwrap().0,
+            "other db"
         );
         assert!(
             prepare(

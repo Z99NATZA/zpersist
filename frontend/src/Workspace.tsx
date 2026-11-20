@@ -1,14 +1,16 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import type { EditorView } from '@codemirror/view';
-import { ChevronRight, Database, ListFilter, Play, Plus, RefreshCw, Table2, Terminal, X } from 'lucide-react';
+import { ChevronRight, Database, ListFilter, Play, Plus, RefreshCw, Save, Table2, Terminal, X } from 'lucide-react';
 import { api, ApiError, problemFromError } from './api';
-import type { DatabaseTable, Problem, QueryResponse, ResultTable } from './api';
+import type { CellValue, DatabaseTable, Problem, QueryResponse, ResultTable } from './api';
 import { useEditorTabs } from './editorTabs';
 import type { EditorTab } from './editorTabs';
 import { ErrorNotice } from './ErrorNotice';
 import { useI18n } from './i18n';
 import { ResultGrid } from './ResultGrid';
+import { applySavedRows, changeDraft, pendingRows } from './resultEdits';
+import type { ChangeCell, ResultDrafts } from './resultEdits';
 import { selectedSql, SqlEditor } from './SqlEditor';
 import { VerticalResizeHandle } from './VerticalResizeHandle';
 
@@ -17,6 +19,7 @@ const RESULT_WARNING_CELLS = 10_000;
 const RESULT_WARNING_TEXT_LENGTH = 1_000_000;
 const MAX_EXPLORER_STRETCH = 26;
 const EXPLORER_SPRING_RATE = 0.038;
+const EXPLORER_SKELETON_MIN_MS = 320;
 
 type ExplorerScrollMotion = {
   direction: number;
@@ -41,12 +44,14 @@ type UpdateWorkspaceProblem = (source: WorkspaceProblem['source'], problem: Prob
 
 type TabQuery = {
   running: boolean;
+  saving: boolean;
   response: QueryResponse | null;
   visible: number[];
   issue: ReportedProblem | null;
+  drafts: ResultDrafts;
 };
 
-const EMPTY_QUERY: TabQuery = { running: false, response: null, visible: [], issue: null };
+const EMPTY_QUERY: TabQuery = { running: false, saving: false, response: null, visible: [], issue: null, drafts: {} };
 
 function hasLargeResults(results: ResultTable[], visible: number[]): boolean {
   let cells = 0;
@@ -78,7 +83,8 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
   const tab = tabs.find((item) => item.id === activeId) ?? tabs[0];
   const { sql, database } = tab;
   const [queries, setQueries] = useState<Record<number, TabQuery>>({});
-  const { running, response, visible, issue: queryIssue } = queries[activeId] ?? EMPTY_QUERY;
+  const { running, saving, response, visible, drafts, issue: queryIssue } = queries[activeId] ?? EMPTY_QUERY;
+  const hasDrafts = Object.keys(drafts).length > 0;
   const [databases, setDatabases] = useState<string[] | null>(null);
   const [databasesOpen, setDatabasesOpen] = useState(true);
   const [tablesOpen, setTablesOpen] = useState(true);
@@ -86,6 +92,7 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
   const [selectionSize, setSelectionSize] = useState<number | null>(null);
   const [picking, setPicking] = useState(false);
   const [closingTab, setClosingTab] = useState<number | null>(null);
+  const [replacingResults, setReplacingResults] = useState<string | null>(null);
   const [autoFocusEditor, setAutoFocusEditor] = useState(false);
   const databaseSelect = useRef<HTMLSelectElement>(null);
   const errorNotice = useRef<HTMLDivElement>(null);
@@ -140,6 +147,17 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
     setQueries((current) => ({ ...current, [id]: { ...(current[id] ?? EMPTY_QUERY), ...change } }));
   }
 
+  const editCell = useCallback<ChangeCell>((result, row, column, value) => {
+    setQueries((current) => {
+      const tabQuery = current[activeId];
+      if (!tabQuery?.response || tabQuery.saving) return current;
+      const original = tabQuery.response.results[result].rows[row][column];
+      const drafts = changeDraft(tabQuery.drafts, result, row, column, original, value);
+      if (drafts === tabQuery.drafts) return current;
+      return { ...current, [activeId]: { ...tabQuery, drafts } };
+    });
+  }, [activeId]);
+
   function resetEditorSelection() {
     setSelectionSize(null);
     setPicking(false);
@@ -163,7 +181,7 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
   }
 
   function confirmCloseTab() {
-    if (closingTab === null || tabs.length < 2) return;
+    if (closingTab === null || tabs.length < 2 || queries[closingTab]?.saving) return;
     const id = closingTab;
     activeQueries.current.get(id)?.abort();
     activeQueries.current.delete(id);
@@ -206,7 +224,7 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
     if (name && queryIssue?.problem.code === 'database_required') updateQuery(activeId, { issue: null });
   }
 
-  async function runSql() {
+  function runSql() {
     const state = editor.current?.state;
     if (!state || activeQueries.current.has(activeId)) return;
     const query = selectedSql(state) ?? state.doc.toString().trim();
@@ -215,7 +233,11 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
       updateQuery(activeId, { issue: { problem: { code: 'database_required' }, reportedAt: performance.now() } });
       return;
     }
+    if (hasDrafts) setReplacingResults(query);
+    else void executeSql(query);
+  }
 
+  async function executeSql(query: string) {
     const controller = new AbortController();
     activeQueries.current.set(activeId, controller);
     updateQuery(activeId, { ...EMPTY_QUERY, running: true });
@@ -235,6 +257,35 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
     } finally {
       if (activeQueries.current.get(activeId) === controller) activeQueries.current.delete(activeId);
       if (!controller.signal.aborted) updateQuery(activeId, { running: false });
+    }
+  }
+
+  async function saveEdits() {
+    if (!response || !hasDrafts || activeQueries.current.has(activeId)) return;
+    const controller = new AbortController();
+    activeQueries.current.set(activeId, controller);
+    updateQuery(activeId, { saving: true, issue: null });
+    try {
+      const pending = pendingRows(response.results, drafts);
+      const rows = pending.map((row) => ({
+        ...row,
+        changes: row.changes.map(({ column, original, value }) => ({ column, original, value })),
+      }));
+      const saved = await api<CellValue[][]>('/query/edits', {
+        method: 'POST',
+        body: { rows },
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) {
+        updateQuery(activeId, { response: applySavedRows(response, pending, saved), drafts: {} });
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      else updateQuery(activeId, { issue: { problem: problemFromError(error), reportedAt: performance.now() } });
+    } finally {
+      if (activeQueries.current.get(activeId) === controller) activeQueries.current.delete(activeId);
+      if (!controller.signal.aborted) updateQuery(activeId, { saving: false });
     }
   }
 
@@ -270,7 +321,7 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
         </div>
         <button
           className="button button-primary"
-          disabled={!hasSqlToRun || running}
+          disabled={!hasSqlToRun || running || saving}
           onMouseDown={(event) => event.preventDefault()}
           onClick={runSql}
           title={t('runSqlShortcut')}
@@ -299,17 +350,22 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
               </h2>
               <button
                 className="button icon-button explorer-refresh"
+                data-loading={loadingDatabases || undefined}
                 aria-label={t('refreshDatabases')}
                 title={t('refreshDatabases')}
                 disabled={loadingDatabases}
                 onClick={loadDatabases}
               ><RefreshCw size={16} aria-hidden="true" /></button>
             </div>
-            <div className="explorer-panel" id="explorer-databases" hidden={!databasesOpen}>
-              {databases?.length ? <DatabaseList databases={databases} selected={database} disabled={running} onSelect={chooseDatabase} /> :
-                loadingDatabases ? <p className="explorer-message" role="status">{t('loadingDatabases')}</p> :
-                databases && <p className="explorer-message">{t('noDatabases')}</p>}
-            </div>
+            <ExplorerListPanel
+              id="explorer-databases"
+              open={databasesOpen}
+              loading={loadingDatabases}
+              loadingLabel={t('loadingDatabases')}
+              emptyLabel={databases ? t('noDatabases') : undefined}
+            >
+              {databases?.length ? <DatabaseList databases={databases} selected={database} disabled={running} onSelect={chooseDatabase} /> : null}
+            </ExplorerListPanel>
           </section>
 
           <DatabaseTables
@@ -347,6 +403,7 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
                         type="button"
                         className="editor-tab-close"
                         aria-label={t('closeQueryTab', { tab: tabTitle(item.id) })}
+                        disabled={queries[item.id]?.saving}
                         onClick={() => setClosingTab(item.id)}
                       ><X size={14} aria-hidden="true" /></button>
                     )}
@@ -381,10 +438,16 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
                 <h2 id="results-title">{t('results')}</h2>
                 {response && <span className="query-metrics">{t('elapsedTime', { count: response.elapsed_ms })}</span>}
               </div>
-              <button className="button button-secondary" disabled={!results.length || running} onClick={() => setPicking(true)}>
-                <ListFilter size={16} aria-hidden="true" />
-                {results.length ? t('chooseResultsCount', { visible: visible.length, total: results.length }) : t('chooseResults')}
-              </button>
+              <div className="results-actions">
+                <button type="button" className="button button-primary" disabled={!hasDrafts || running || saving} onClick={saveEdits}>
+                  <Save size={15} aria-hidden="true" />
+                  {t(saving ? 'savingResults' : 'saveResults')}
+                </button>
+                <button type="button" className="button button-secondary" disabled={!results.length || running} onClick={() => setPicking(true)}>
+                  <ListFilter size={16} aria-hidden="true" />
+                  {results.length ? t('chooseResultsCount', { visible: visible.length, total: results.length }) : t('chooseResults')}
+                </button>
+              </div>
             </div>
             <div className="results-scroll workspace-scrollbar" role="region" aria-labelledby="results-title" tabIndex={0} key={activeId}>
               <div className="results-content">
@@ -393,13 +456,13 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
                     <ErrorNotice problem={displayedIssue.problem} />
                   </div>
                 )}
-                <div aria-busy={running}>
+                <div aria-busy={running || saving}>
                   {visible.length ? (
                     <div className="result-stack">
                       {warnAboutResults && <p className="notice result-warning" role="status">{t('largeResultsWarning')}</p>}
                       {visible.map((index) => (
                         <Fragment key={index}>
-                          <ResultGrid index={index} result={results[index]} />
+                          <ResultGrid index={index} result={results[index]} draft={drafts[index]} saving={saving} onChange={editCell} />
                           <VerticalResizeHandle
                             kind="result"
                             controls={`result-grid-${index}`}
@@ -422,14 +485,31 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
       </div>
       {picking && <ResultPicker results={results} visible={visible} onClose={() => setPicking(false)} onApply={(next) => { updateQuery(activeId, { visible: next }); setPicking(false); }} />}
       {closingTab !== null && (
-        <CloseTabDialog name={tabTitle(closingTab)} onCancel={() => setClosingTab(null)} onConfirm={confirmCloseTab} />
+        <ConfirmationDialog
+          title={t('confirmCloseQueryTab', { tab: tabTitle(closingTab) })}
+          description={t(Object.keys(queries[closingTab]?.drafts ?? {}).length ? 'closeQueryTabDraftWarning' : 'closeQueryTabWarning')}
+          confirmLabel={t('closeTab')}
+          onCancel={() => setClosingTab(null)}
+          onConfirm={confirmCloseTab}
+        />
+      )}
+      {replacingResults !== null && (
+        <ConfirmationDialog
+          title={t('confirmReplaceResults')}
+          description={t('replaceResultsWarning')}
+          confirmLabel={t('runSql')}
+          onCancel={() => setReplacingResults(null)}
+          onConfirm={() => { setReplacingResults(null); void executeSql(replacingResults); }}
+        />
       )}
     </main>
   );
 }
 
-function CloseTabDialog({ name, onCancel, onConfirm }: {
-  name: string;
+function ConfirmationDialog({ title, description, confirmLabel, onCancel, onConfirm }: {
+  title: string;
+  description: string;
+  confirmLabel: string;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -441,19 +521,61 @@ function CloseTabDialog({ name, onCancel, onConfirm }: {
     <dialog
       ref={dialog}
       className="result-dialog"
-      aria-labelledby="close-tab-title"
-      aria-describedby="close-tab-description"
+      aria-labelledby="confirmation-title"
+      aria-describedby="confirmation-description"
       onClose={onCancel}
     >
-      <div className="dialog-header"><h2 id="close-tab-title">{t('confirmCloseQueryTab', { tab: name })}</h2></div>
-      <p className="dialog-description" id="close-tab-description">{t('closeQueryTabWarning')}</p>
+      <div className="dialog-header"><h2 id="confirmation-title">{title}</h2></div>
+      <p className="dialog-description" id="confirmation-description">{description}</p>
       <div className="dialog-footer close-tab-footer">
         <div>
           <button type="button" className="button button-secondary" onClick={() => dialog.current?.close()} autoFocus>{t('cancel')}</button>
-          <button type="button" className="button button-primary" onClick={onConfirm}>{t('closeTab')}</button>
+          <button type="button" className="button button-primary" onClick={onConfirm}>{confirmLabel}</button>
         </div>
       </div>
     </dialog>
+  );
+}
+
+function ExplorerListPanel({ id, open, loading, loadingLabel, emptyLabel, children }: {
+  id: string;
+  open: boolean;
+  loading: boolean;
+  loadingLabel: string;
+  emptyLabel?: string;
+  children: ReactNode;
+}) {
+  const [visible, setVisible] = useState(loading);
+  const startedAt = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (loading) {
+      startedAt.current = performance.now();
+      setVisible(true);
+      return;
+    }
+    if (startedAt.current === null) return;
+    const remaining = EXPLORER_SKELETON_MIN_MS - (performance.now() - startedAt.current);
+    if (remaining <= 0) {
+      setVisible(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setVisible(false), remaining);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
+
+  const skeleton = loading || visible;
+  return (
+    <>
+      <span className="explorer-status" role="status">{loading ? loadingLabel : ''}</span>
+      <div className="explorer-panel" id={id} hidden={!open} aria-busy={skeleton}>
+        {children || skeleton ? (
+          <ExplorerScrollList skeleton={skeleton}>
+            {children ?? Array.from({ length: 6 }, (_, index) => <li className="explorer-item explorer-placeholder" key={index} />)}
+          </ExplorerScrollList>
+        ) : emptyLabel && <p className="explorer-message">{emptyLabel}</p>}
+      </div>
+    </>
   );
 }
 
@@ -463,20 +585,16 @@ function DatabaseList({ databases, selected, disabled, onSelect }: {
   disabled: boolean;
   onSelect: (name: string) => void;
 }) {
-  return (
-    <ExplorerScrollList>
-      {databases.map((name) => (
-        <li key={name}>
-          <button className="explorer-item database-item" aria-pressed={name === selected} disabled={disabled} onClick={() => onSelect(name)}>
-            <Database size={16} aria-hidden="true" /><span>{name}</span>
-          </button>
-        </li>
-      ))}
-    </ExplorerScrollList>
-  );
+  return databases.map((name) => (
+    <li key={name}>
+      <button className="explorer-item database-item" aria-pressed={name === selected} disabled={disabled} onClick={() => onSelect(name)}>
+        <Database size={16} aria-hidden="true" /><span>{name}</span>
+      </button>
+    </li>
+  ));
 }
 
-function ExplorerScrollList({ children }: { children: ReactNode }) {
+function ExplorerScrollList({ skeleton, children }: { skeleton: boolean; children: ReactNode }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -628,7 +746,7 @@ function ExplorerScrollList({ children }: { children: ReactNode }) {
   return (
     <div className="explorer-scroll workspace-scrollbar" ref={viewportRef}>
       <div className="explorer-scroll-track" ref={trackRef}>
-        <ul className="explorer-list" ref={listRef}>{children}</ul>
+        <ul className="explorer-list" ref={listRef} data-skeleton={skeleton || undefined} inert={skeleton}>{children}</ul>
       </div>
     </div>
   );
@@ -690,27 +808,29 @@ function DatabaseTables({ database, open, onToggle, updateProblem, onSessionExpi
         </h2>
         <button
           className="button icon-button explorer-refresh"
+          data-loading={(!!database && loading) || undefined}
           aria-label={t('refreshTables')}
           title={t('refreshTables')}
           disabled={!database || loading}
           onClick={refreshTables}
         ><RefreshCw size={16} aria-hidden="true" /></button>
       </div>
-      <div className="explorer-panel" id="explorer-tables" hidden={!expanded} aria-busy={!!database && loading}>
-        {database && (tables?.length ? (
-          <ExplorerScrollList>
-            {tables.map(({ schema, name }) => {
-              const label = `${schema}.${name}`;
-              return (
-                <li className="explorer-item" key={JSON.stringify([schema, name])} title={label}>
-                  <Table2 size={16} aria-hidden="true" /><span>{label}</span>
-                </li>
-              );
-            })}
-          </ExplorerScrollList>
-        ) : loading ? <p className="explorer-message" role="status">{t('loadingTables')}</p> :
-          tables && <p className="explorer-message">{t('noTables')}</p>)}
-      </div>
+      <ExplorerListPanel
+        id="explorer-tables"
+        open={expanded}
+        loading={!!database && loading}
+        loadingLabel={t('loadingTables')}
+        emptyLabel={tables ? t('noTables') : undefined}
+      >
+        {tables?.length ? tables.map(({ schema, name }) => {
+          const label = `${schema}.${name}`;
+          return (
+            <li className="explorer-item" key={JSON.stringify([schema, name])} title={label}>
+              <Table2 size={16} aria-hidden="true" /><span>{label}</span>
+            </li>
+          );
+        }) : null}
+      </ExplorerListPanel>
     </section>
   );
 }

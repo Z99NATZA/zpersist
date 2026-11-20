@@ -1,8 +1,9 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent } from 'react';
 import { Table2 } from 'lucide-react';
-import type { ResultTable } from './api';
+import type { CellValue, EditableColumn, ResultTable } from './api';
 import { useI18n } from './i18n';
+import type { ChangeCell, GridDraft, RowDraft } from './resultEdits';
 
 const PREVIEW_ROWS = 3;
 const PREVIEW_PEEK_HEIGHT = 18;
@@ -28,8 +29,14 @@ function measureColumns(header: HTMLTableCellElement) {
   return Array.from(row.cells).slice(0, -1).map((cell) => cell.getBoundingClientRect().width);
 }
 
-export function ResultGrid({ index, result }: { index: number; result: ResultTable }) {
-  const { t, number } = useI18n();
+export const ResultGrid = memo(function ResultGrid({ index, result, draft, saving, onChange }: {
+  index: number;
+  result: ResultTable;
+  draft?: GridDraft;
+  saving: boolean;
+  onChange: ChangeCell;
+}) {
+  const { t } = useI18n();
   const viewportRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<HTMLTableElement>(null);
   const guideRef = useRef<HTMLDivElement>(null);
@@ -40,20 +47,33 @@ export function ResultGrid({ index, result }: { index: number; result: ResultTab
   const rows = t(count === 1 ? 'rowCount' : 'rowsCount', { count });
   const columns = ['#', ...result.columns.map((column) => column || t('unnamedColumn'))];
   const tableWidth = widths?.reduce((total, width) => total + width, 0);
+  const clipped = useMemo(() => {
+    const rows = new Map<number, Set<number>>();
+    for (const [row, column] of result.clipped ?? []) {
+      let cells = rows.get(row);
+      if (!cells) rows.set(row, cells = new Set());
+      cells.add(column);
+    }
+    return rows;
+  }, [result.clipped]);
   const body = useMemo(() => (
     <tbody>
       {result.rows.map((row, i) => (
-        <tr key={i}>
-          <th scope="row">{number(i + 1)}</th>
-          {row.map((cell, j) => cell === null ?
-            <td className="null-cell" key={j}>{t('nullValue')}</td> :
-            <td key={j} title={cell}>{cell}</td>,
-          )}
-          <td className="result-column-filler" aria-hidden="true" />
-        </tr>
+        <ResultRow
+          key={i}
+          resultIndex={index}
+          rowIndex={i}
+          row={row}
+          draft={draft?.[i]}
+          labels={result.columns}
+          clipped={clipped.get(i)}
+          editable={!saving && result.editable?.key.every(({ index }) => row[index] != null && !clipped.get(i)?.has(index))
+            ? result.editable.columns : undefined}
+          onChange={onChange}
+        />
       ))}
     </tbody>
-  ), [number, result.rows, t]);
+  ), [clipped, draft, index, onChange, result, saving]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -239,5 +259,153 @@ export function ResultGrid({ index, result }: { index: number; result: ResultTab
       </div>
       <div className="column-resize-guide" ref={guideRef} aria-hidden="true" hidden />
     </section>
+  );
+});
+
+const ResultRow = memo(function ResultRow({ resultIndex, rowIndex, row, draft, labels, clipped, editable, onChange }: {
+  resultIndex: number;
+  rowIndex: number;
+  row: CellValue[];
+  draft?: RowDraft;
+  labels: string[];
+  clipped?: Set<number>;
+  editable?: (EditableColumn | null)[];
+  onChange: ChangeCell;
+}) {
+  const { number, t } = useI18n();
+  return (
+    <tr>
+      <th scope="row">{number(rowIndex + 1)}</th>
+      {row.map((original, column) => {
+        const value = draft?.[column];
+        return (
+          <ResultCell
+            key={column}
+            value={value === undefined ? original : value}
+            dirty={value !== undefined}
+            label={labels[column] || t('unnamedColumn')}
+            editable={clipped?.has(column) ? undefined : editable?.[column] ?? undefined}
+            first={rowIndex === 0 && column === 0}
+            onChange={(value) => onChange(resultIndex, rowIndex, column, value)}
+          />
+        );
+      })}
+      <td className="result-column-filler" aria-hidden="true" />
+    </tr>
+  );
+});
+
+function ResultCell({ value, dirty, label, editable, first, onChange }: {
+  value: CellValue;
+  dirty: boolean;
+  label: string;
+  editable?: EditableColumn;
+  first: boolean;
+  onChange: (value: CellValue) => void;
+}) {
+  const { t } = useI18n();
+  const [edit, setEdit] = useState<{ initial: CellValue } | null>(null);
+  const startedFocused = useRef(false);
+  const cell = useRef<HTMLTableCellElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const editing = edit !== null && editable !== undefined;
+  const text = value ?? t('nullValue');
+
+  useLayoutEffect(() => {
+    if (!editing || !input.current) return;
+    const field = input.current;
+    field.focus({ preventScroll: true });
+    field.setSelectionRange(field.value.length, field.value.length);
+  }, [editing]);
+
+  function cellKeys(event: KeyboardEvent<HTMLTableCellElement>) {
+    if (event.target !== event.currentTarget) return;
+    const current = event.currentTarget;
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'c') {
+      const selection = window.getSelection();
+      const display = current.querySelector('.result-cell-text');
+      if (selection?.isCollapsed && display) {
+        const range = document.createRange();
+        range.selectNodeContents(display);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        // Let the browser copy the value on HTTP origins as well.
+        window.setTimeout(() => {
+          if (selection.rangeCount && selection.getRangeAt(0) === range) selection.removeAllRanges();
+        }, 0);
+      }
+      return;
+    }
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (editable && (event.key === 'Enter' || event.key === 'F2')) {
+      event.preventDefault();
+      setEdit({ initial: value });
+      return;
+    }
+
+    const row = current.parentElement as HTMLTableRowElement;
+    let next: Element | null = null;
+    switch (event.key) {
+      case 'ArrowLeft': next = current.previousElementSibling; break;
+      case 'ArrowRight': next = current.nextElementSibling; break;
+      case 'ArrowUp': next = (row.previousElementSibling as HTMLTableRowElement | null)?.cells[current.cellIndex] ?? null; break;
+      case 'ArrowDown': next = (row.nextElementSibling as HTMLTableRowElement | null)?.cells[current.cellIndex] ?? null; break;
+      default: return;
+    }
+    if (!(next instanceof HTMLTableCellElement) || !next.classList.contains('result-cell')) return;
+    event.preventDefault();
+    next.focus();
+  }
+
+  function inputKeys(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing) return;
+    if (event.altKey && event.key === 'Delete' && editable?.nullable) {
+      event.preventDefault();
+      onChange(null);
+    } else if (event.key === 'Escape' || (event.key === 'Enter' && !event.shiftKey)) {
+      event.preventDefault();
+      if (event.key === 'Escape' && edit) onChange(edit.initial);
+      setEdit(null);
+      cell.current?.focus({ preventScroll: true });
+    }
+  }
+
+  return (
+    <td
+      className={value === null ? 'result-cell null-cell' : 'result-cell'}
+      data-draft={dirty || undefined}
+      data-editing={editing || undefined}
+      ref={cell}
+      tabIndex={first ? 0 : -1}
+      title={editing ? undefined : text}
+      onMouseDown={(event) => {
+        startedFocused.current = event.button === 0 && document.activeElement === event.currentTarget && !editing;
+        if (startedFocused.current && editable && !event.shiftKey) event.preventDefault();
+      }}
+      onClick={(event) => {
+        if (editing) return;
+        if (startedFocused.current && editable && !event.shiftKey) setEdit({ initial: value });
+        else event.currentTarget.focus({ preventScroll: true });
+        startedFocused.current = false;
+      }}
+      onKeyDown={cellKeys}
+    >
+      <div className="result-cell-content">
+        <span className="result-cell-text" aria-hidden={editing || undefined}>{text}</span>
+        {editing && (
+          <textarea
+            ref={input}
+            rows={1}
+            aria-label={label}
+            title={editable.nullable ? t('editNullableCell') : undefined}
+            placeholder={value === null ? t('nullValue') : undefined}
+            value={value ?? ''}
+            onChange={(event) => onChange(event.target.value)}
+            onBlur={() => setEdit(null)}
+            onKeyDown={inputKeys}
+          />
+        )}
+      </div>
+    </td>
   );
 }
