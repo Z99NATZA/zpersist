@@ -1,7 +1,11 @@
 mod selection;
 
 use crate::{ApiError, AppState, ErrorCode, setting};
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::StatusCode,
+};
 use axum_extra::extract::cookie::CookieJar;
 use deadpool::Runtime;
 use deadpool::managed::{Manager, Metrics, Object, Pool, PoolError, RecycleResult};
@@ -23,6 +27,7 @@ use tokio::{net::TcpStream, time::timeout};
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use zeroize::Zeroizing;
 
+const DEFAULT_DATABASE: &str = "master";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const ROW_LIMIT: usize = 500;
 const CELL_BYTES: usize = 4 * 1024;
@@ -79,7 +84,7 @@ impl Drop for Lease {
 impl DatabaseServer {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         let mut config = Config::new();
-        config.database("master");
+        config.database(DEFAULT_DATABASE);
         config.application_name("zpersist");
         config.encryption(EncryptionLevel::Required);
         Ok(Self {
@@ -242,9 +247,57 @@ pub async fn list(
         .map(Json)
 }
 
+fn database_identifier(database: &str) -> Result<String, ApiError> {
+    if database.is_empty() || database.encode_utf16().count() > 128 || database.contains('\0') {
+        return Err(ApiError::bad_request(ErrorCode::InvalidDatabase));
+    }
+    Ok(format!("[{}]", database.replace(']', "]]")))
+}
+
+#[derive(Deserialize)]
+pub struct TableListParams {
+    #[serde(default)]
+    database: String,
+}
+
+#[derive(Serialize)]
+pub struct DatabaseTable {
+    schema: String,
+    name: String,
+}
+
+pub async fn list_tables(
+    State(state): State<AppState>,
+    cookies: CookieJar,
+    Query(params): Query<TableListParams>,
+) -> Result<Json<Vec<DatabaseTable>>, ApiError> {
+    let session = state.auth.require(&cookies)?;
+    let database = database_identifier(&params.database)?;
+    let sql = format!(
+        "SELECT s.[name], t.[name] FROM {database}.[sys].[tables] AS t
+         JOIN {database}.[sys].[schemas] AS s ON s.[schema_id] = t.[schema_id]
+         WHERE t.[is_ms_shipped] = 0 ORDER BY s.[name], t.[name]"
+    );
+    session
+        .database
+        .run(async |client| {
+            let rows = client.simple_query(sql).await?.into_first_result().await?;
+            rows.into_iter()
+                .map(|row| {
+                    Ok(DatabaseTable {
+                        schema: row.try_get::<&str, _>(0)?.unwrap_or_default().to_owned(),
+                        name: row.try_get::<&str, _>(1)?.unwrap_or_default().to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .await
+        .map(Json)
+}
+
 #[derive(Deserialize)]
 pub struct QueryRequest {
-    database: String,
+    database: Option<String>,
     sql: String,
 }
 
@@ -267,7 +320,12 @@ pub async fn query(
     Json(request): Json<QueryRequest>,
 ) -> Result<Json<QueryResponse>, ApiError> {
     let session = state.auth.require(&cookies)?;
-    let batch = selection::prepare(&request.database, &request.sql)?;
+    let database = request
+        .database
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(DEFAULT_DATABASE);
+    let batch = selection::prepare(database, &request.sql)?;
     let started = Instant::now();
     let results = session
         .database

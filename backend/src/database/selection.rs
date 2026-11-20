@@ -1,3 +1,4 @@
+use super::database_identifier;
 use crate::{ApiError, ErrorCode};
 use serde_json::json;
 use sqlparser::{
@@ -10,9 +11,7 @@ use std::ops::ControlFlow;
 const SQL_BYTES: usize = 24 * 1024;
 
 pub fn prepare(database: &str, sql: &str) -> Result<String, ApiError> {
-    if database.is_empty() || database.encode_utf16().count() > 128 || database.contains('\0') {
-        return Err(ApiError::bad_request(ErrorCode::InvalidDatabase));
-    }
+    let database = database_identifier(database)?;
     if sql.len() > SQL_BYTES {
         return Err(ApiError::bad_request(ErrorCode::SqlTooLarge)
             .with_params(json!({ "limit": SQL_BYTES / 1024 })));
@@ -41,7 +40,7 @@ pub fn prepare(database: &str, sql: &str) -> Result<String, ApiError> {
     }
 
     // The first USE sets the context on every checkout, even after an override on this connection.
-    Ok(format!("USE [{}];\n{sql}", database.replace(']', "]]")))
+    Ok(format!("USE {database};\n{sql}"))
 }
 
 struct ReadOnly;

@@ -3,6 +3,11 @@ export interface Session {
   username: string;
 }
 
+export interface DatabaseTable {
+  schema: string;
+  name: string;
+}
+
 export interface ResultTable {
   columns: string[];
   rows: (string | null)[][];
@@ -28,7 +33,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, options?: { method: 'POST'; body?: unknown; signal?: AbortSignal }): Promise<T> {
+export async function api<T>(path: string, options?: { method?: 'POST'; body?: unknown; signal?: AbortSignal }): Promise<T> {
   let response: Response;
   try {
     response = await fetch('/api' + path, {

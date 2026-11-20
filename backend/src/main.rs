@@ -123,6 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/login", post(auth::login))
         .route("/logout", post(auth::logout))
         .route("/databases", get(database::list))
+        .route("/tables", get(database::list_tables))
         .route("/query", post(database::query))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, ErrorCode::NotFound) })
         .layer(middleware::map_response(async |mut response: Response| {

@@ -1,66 +1,121 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { KeyboardEvent, UIEvent } from 'react';
-import { Database, ListFilter, Play, RefreshCw, Table2, Terminal } from 'lucide-react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent, ReactNode, UIEvent } from 'react';
+import { ChevronRight, Database, ListFilter, Play, RefreshCw, Table2, Terminal } from 'lucide-react';
 import { api, ApiError, problemFromError } from './api';
-import type { Problem, QueryResponse, ResultTable } from './api';
+import type { DatabaseTable, Problem, QueryResponse, ResultTable } from './api';
 import { ErrorNotice } from './ErrorNotice';
 import { useI18n } from './i18n';
+import { VerticalResizeHandle } from './VerticalResizeHandle';
 
 const MAX_VISIBLE_RESULTS = 5;
+const RESULT_PREVIEW_ROWS = 3;
+const RESULT_PREVIEW_PEEK_HEIGHT = 18;
+const RESULT_WARNING_CELLS = 10_000;
+const RESULT_WARNING_TEXT_LENGTH = 1_000_000;
 const INITIAL_SQL = 'SELECT DB_NAME() AS [database_name];\nSELECT SYSDATETIME() AS [server_time];';
-const MAX_DATABASE_STRETCH = 26;
-const DATABASE_SPRING_RATE = 0.038;
+const MAX_EXPLORER_STRETCH = 26;
+const EXPLORER_SPRING_RATE = 0.038;
 
-type DatabaseScrollMotion = {
+type ExplorerScrollMotion = {
   direction: number;
   edge: number;
   position: number;
   velocity: number;
-  stretch: number;
+  target: number;
   idleTime: number;
-  recovering: boolean;
 };
 
-export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }) {
+export type WorkspaceProblem = {
+  source: 'databases' | 'tables' | 'query' | 'logout';
+  problem: Problem;
+  database?: string;
+};
+
+type UpdateWorkspaceProblem = (source: WorkspaceProblem['source'], problem: Problem | null, database?: string) => void;
+
+function highlightedSql(field: HTMLTextAreaElement): string | null {
+  const { value, selectionStart, selectionEnd } = field;
+  return selectionStart === selectionEnd ? null : value.slice(selectionStart, selectionEnd).trim();
+}
+
+function hasLargeResults(results: ResultTable[], visible: number[]): boolean {
+  let cells = 0;
+  let textLength = 0;
+  for (const index of visible) {
+    const { columns, rows } = results[index];
+    cells += rows.length * (columns.length + 1);
+    if (cells >= RESULT_WARNING_CELLS) return true;
+    for (const row of rows) {
+      for (const cell of row) {
+        textLength += cell?.length ?? 0;
+        if (textLength >= RESULT_WARNING_TEXT_LENGTH) return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function Workspace({ issue, updateProblem, onSessionExpired }: {
+  issue: WorkspaceProblem | null;
+  updateProblem: UpdateWorkspaceProblem;
+  onSessionExpired: () => void;
+}) {
   const { t, number } = useI18n();
-  const [databases, setDatabases] = useState<string[]>([]);
+  const [databases, setDatabases] = useState<string[] | null>(null);
   const [database, setDatabase] = useState('');
+  const [databasesOpen, setDatabasesOpen] = useState(true);
+  const [tablesOpen, setTablesOpen] = useState(true);
   const [loadingDatabases, setLoadingDatabases] = useState(true);
-  const [databaseError, setDatabaseError] = useState<Problem | null>(null);
   const [sql, setSql] = useState(INITIAL_SQL);
-  const [selectionSize, setSelectionSize] = useState(0);
+  const [selectionSize, setSelectionSize] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [response, setResponse] = useState<QueryResponse | null>(null);
-  const [queryError, setQueryError] = useState<Problem | null>(null);
   const [visible, setVisible] = useState<number[]>([]);
   const [picking, setPicking] = useState(false);
+  const databaseSelect = useRef<HTMLSelectElement>(null);
+  const errorNotice = useRef<HTMLDivElement>(null);
   const editor = useRef<HTMLTextAreaElement>(null);
   const lineNumbers = useRef<HTMLDivElement>(null);
   const activeQuery = useRef<AbortController | null>(null);
+  const displayedIssue = issue?.source === 'tables' && issue.database !== database ? null : issue;
+  const databaseRequired = displayedIssue?.problem.code === 'database_required';
 
   const loadDatabases = useCallback(async () => {
     setLoadingDatabases(true);
-    setDatabaseError(null);
+    updateProblem('databases', null);
     try {
       const list = await api<string[]>('/databases');
       setDatabases(list);
-      setDatabase((current) => list.includes(current) ? current : (list.find((name) =>
-        !['master', 'model', 'msdb', 'tempdb'].includes(name.toLowerCase()),
-      ) ?? list[0] ?? ''));
+      setDatabase((current) => list.includes(current) ? current : '');
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onSessionExpired();
-      else setDatabaseError(problemFromError(error));
+      else updateProblem('databases', problemFromError(error));
     } finally {
       setLoadingDatabases(false);
     }
-  }, [onSessionExpired]);
+  }, [onSessionExpired, updateProblem]);
 
   useEffect(() => { void loadDatabases(); }, [loadDatabases]);
+
+  useEffect(() => {
+    if (!displayedIssue) return;
+    const notice = errorNotice.current;
+    notice?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const select = databaseSelect.current;
+    const target = databaseRequired && select && !select.disabled ? select : notice;
+    target?.focus({ preventScroll: true });
+  }, [displayedIssue, databaseRequired]);
+
+  function chooseDatabase(name: string) {
+    setDatabase(name);
+    if (name !== database) updateProblem('tables', null);
+    if (name && databaseRequired) updateProblem('query', null);
+  }
 
   function updateSelection() {
     const field = editor.current;
     if (field) {
-      setSelectionSize(field.value.slice(field.selectionStart, field.selectionEnd).trim().length);
+      setSelectionSize(highlightedSql(field)?.length ?? null);
     }
   }
 
@@ -68,23 +123,26 @@ export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }
     if (lineNumbers.current) lineNumbers.current.scrollTop = event.currentTarget.scrollTop;
   }
 
-  async function runSelection() {
+  async function runSql() {
     const field = editor.current;
-    if (!field || !database || activeQuery.current) return;
-    const selection = field.value.slice(field.selectionStart, field.selectionEnd).trim();
-    if (!selection) return;
+    if (!field || activeQuery.current) return;
+    const query = highlightedSql(field) ?? field.value.trim();
+    if (!query) return;
+    if (!database) {
+      updateProblem('query', { code: 'database_required' });
+      return;
+    }
 
-    const chosenDatabase = database;
     const controller = new AbortController();
     activeQuery.current = controller;
     setRunning(true);
-    setQueryError(null);
+    updateProblem('query', null);
     setResponse(null);
     setVisible([]);
     try {
       const data = await api<QueryResponse>('/query', {
         method: 'POST',
-        body: { database: chosenDatabase, sql: selection },
+        body: { database, sql: query },
         signal: controller.signal,
       });
       setResponse(data);
@@ -92,7 +150,7 @@ export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }
     } catch (error) {
       if (controller.signal.aborted) return;
       if (error instanceof ApiError && error.status === 401) onSessionExpired();
-      else setQueryError(problemFromError(error));
+      else updateProblem('query', problemFromError(error));
     } finally {
       activeQuery.current = null;
       if (!controller.signal.aborted) setRunning(false);
@@ -104,62 +162,95 @@ export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }
   function editorKeys(event: KeyboardEvent<HTMLTextAreaElement>) {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
-      void runSelection();
+      void runSql();
     }
   }
 
   const results = response?.results ?? [];
+  const warnAboutResults = useMemo(() => response !== null && hasLargeResults(response.results, visible), [response, visible]);
+  const hasSqlToRun = selectionSize === null ? sql.trim().length > 0 : selectionSize > 0;
 
   return (
     <main className="workspace">
       <div className="command-bar">
-        <button
-          className="button button-primary"
-          disabled={!selectionSize || !database || running}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={runSelection}
-          title={t('runSelectionShortcut')}
-        >
-          <Play size={15} fill="currentColor" aria-hidden="true" />
-          {t(running ? 'running' : 'runSelection')}
-        </button>
         <div className="database-select">
           <label htmlFor="active-database">{t('database')}</label>
-          <select id="active-database" value={database} onChange={(event) => setDatabase(event.target.value)} disabled={!databases.length || running}>
-            {!databases.length && <option value="">{t('chooseDatabase')}</option>}
-            {databases.map((name) => <option key={name} value={name}>{name}</option>)}
+          <select
+            id="active-database"
+            ref={databaseSelect}
+            value={database}
+            onChange={(event) => chooseDatabase(event.target.value)}
+            disabled={!databases?.length || running}
+            aria-invalid={databaseRequired || undefined}
+            aria-describedby={databaseRequired ? 'workspace-notice' : undefined}
+          >
+            <option value="">{t('chooseDatabase')}</option>
+            {databases?.map((name) => <option key={name} value={name}>{name}</option>)}
           </select>
         </div>
+        <button
+          className="button button-primary"
+          disabled={!hasSqlToRun || running}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={runSql}
+          title={t('runSqlShortcut')}
+        >
+          <Play size={15} fill="currentColor" aria-hidden="true" />
+          {t(running ? 'running' : 'runSql')}
+        </button>
       </div>
 
       <div className="workspace-body">
-        <aside className="explorer" aria-labelledby="explorer-title">
-          <div className="pane-header">
-            <h2 id="explorer-title">{t('databases')}</h2>
-            <button
-              className="button icon-button"
-              aria-label={t('refreshDatabases')}
-              title={t('refreshDatabases')}
-              disabled={loadingDatabases}
-              onClick={loadDatabases}
-            ><RefreshCw size={16} aria-hidden="true" /></button>
-          </div>
-          {databaseError ? <ErrorNotice problem={databaseError} /> : (
-            loadingDatabases && !databases.length ? <p className="explorer-message" role="status">{t('loadingDatabases')}</p> :
-            !databases.length ? <p className="explorer-message">{t('noDatabases')}</p> : (
-              <DatabaseList databases={databases} selected={database} disabled={running} onSelect={setDatabase} />
-            )
-          )}
+        <aside className="explorer workspace-scrollbar" aria-label={t('databases')}>
+          <section className="explorer-section" data-expanded={databasesOpen}>
+            <div className="pane-header explorer-header">
+              <h2>
+                <button
+                  className="explorer-toggle"
+                  aria-expanded={databasesOpen}
+                  aria-controls="explorer-databases"
+                  onClick={() => setDatabasesOpen((open) => !open)}
+                  title={database || undefined}
+                >
+                  <ChevronRight size={15} aria-hidden="true" />
+                  <Database className="explorer-icon" size={16} aria-hidden="true" />
+                  <span>{database || t('chooseDatabase')}</span>
+                </button>
+              </h2>
+              <button
+                className="button icon-button explorer-refresh"
+                aria-label={t('refreshDatabases')}
+                title={t('refreshDatabases')}
+                disabled={loadingDatabases}
+                onClick={loadDatabases}
+              ><RefreshCw size={16} aria-hidden="true" /></button>
+            </div>
+            <div className="explorer-panel" id="explorer-databases" hidden={!databasesOpen}>
+              {databases?.length ? <DatabaseList databases={databases} selected={database} disabled={running} onSelect={chooseDatabase} /> :
+                loadingDatabases ? <p className="explorer-message" role="status">{t('loadingDatabases')}</p> :
+                databases && <p className="explorer-message">{t('noDatabases')}</p>}
+            </div>
+          </section>
+
+          <DatabaseTables
+            key={database}
+            database={database}
+            open={tablesOpen}
+            onToggle={() => setTablesOpen((open) => !open)}
+            updateProblem={updateProblem}
+            onSessionExpired={onSessionExpired}
+          />
         </aside>
 
         <div className="work-area">
-          <section className="editor-pane" aria-labelledby="editor-title">
+          <section className="editor-pane" id="editor-pane" aria-labelledby="editor-title">
             <div className="editor-tabs">
               <div className="editor-tab"><Terminal size={15} aria-hidden="true" /><h1 id="editor-title">{t('queryEditor')}</h1></div>
             </div>
             <div className="editor-body">
               <div className="line-numbers" aria-hidden="true" ref={lineNumbers}>{sql.split('\n').map((_, index) => <div key={index}>{number(index + 1)}</div>)}</div>
               <textarea
+                className="workspace-scrollbar"
                 ref={editor}
                 aria-label={t('sqlEditor')}
                 value={sql}
@@ -178,7 +269,9 @@ export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }
             </div>
           </section>
 
-          <section className="results-pane" aria-labelledby="results-title" aria-busy={running}>
+          <VerticalResizeHandle kind="editor" controls="editor-pane" label={t('resizeEditor')} />
+
+          <section className="results-pane">
             <div className="pane-header">
               <div className="results-heading">
                 <h2 id="results-title">{t('results')}</h2>
@@ -189,17 +282,37 @@ export function Workspace({ onSessionExpired }: { onSessionExpired: () => void }
                 {results.length ? t('chooseResultsCount', { visible: visible.length, total: results.length }) : t('chooseResults')}
               </button>
             </div>
-            {queryError && <ErrorNotice problem={queryError} className="query-notice" />}
-            {!queryError && (!visible.length ? (
-              <div className="empty-results" role="status">
-                <Table2 size={28} strokeWidth={1.5} aria-hidden="true" />
-                <p>{t(running ? 'runningSelection' : response ? (results.length ? 'chooseResultsEmpty' : 'noResults') : 'runForResults')}</p>
+            <div className="results-scroll workspace-scrollbar" role="region" aria-labelledby="results-title" tabIndex={0}>
+              <div className="results-content">
+                {displayedIssue && (
+                  <div className="workspace-notice" id="workspace-notice" ref={errorNotice} tabIndex={-1}>
+                    <ErrorNotice problem={displayedIssue.problem} />
+                  </div>
+                )}
+                <div aria-busy={running}>
+                  {visible.length ? (
+                    <div className="result-stack">
+                      {warnAboutResults && <p className="notice result-warning" role="status">{t('largeResultsWarning')}</p>}
+                      {visible.map((index) => (
+                        <Fragment key={index}>
+                          <ResultGrid index={index} result={results[index]} />
+                          <VerticalResizeHandle
+                            kind="result"
+                            controls={`result-grid-${index}`}
+                            label={t('resizeResult', { result: t('resultTitle', { number: index + 1 }) })}
+                          />
+                        </Fragment>
+                      ))}
+                    </div>
+                  ) : (!displayedIssue || running) && (
+                    <div className="empty-results" role="status">
+                      <Table2 size={28} strokeWidth={1.5} aria-hidden="true" />
+                      <p>{t(running ? 'runningSql' : response ? (results.length ? 'chooseResultsEmpty' : 'noResults') : 'runForResults')}</p>
+                    </div>
+                  )}
+                </div>
               </div>
-            ) : (
-              <div className="result-stack">
-                {visible.map((index) => <ResultGrid key={index} index={index} result={results[index]} />)}
-              </div>
-            ))}
+            </div>
           </section>
         </div>
       </div>
@@ -214,6 +327,20 @@ function DatabaseList({ databases, selected, disabled, onSelect }: {
   disabled: boolean;
   onSelect: (name: string) => void;
 }) {
+  return (
+    <ExplorerScrollList>
+      {databases.map((name) => (
+        <li key={name}>
+          <button className="explorer-item database-item" aria-pressed={name === selected} disabled={disabled} onClick={() => onSelect(name)}>
+            <Database size={16} aria-hidden="true" /><span>{name}</span>
+          </button>
+        </li>
+      ))}
+    </ExplorerScrollList>
+  );
+}
+
+function ExplorerScrollList({ children }: { children: ReactNode }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -227,7 +354,7 @@ function DatabaseList({ databases, selected, disabled, onSelect }: {
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     let pageHeight = viewport.clientHeight;
     let scrollEnd = viewport.scrollHeight - pageHeight;
-    let motion: DatabaseScrollMotion | undefined;
+    let motion: ExplorerScrollMotion | undefined;
     let offset = 0;
     let frame = 0;
     let previousFrame = 0;
@@ -246,28 +373,49 @@ function DatabaseList({ databases, selected, disabled, onSelect }: {
       setOffset(0);
     };
 
+    const scrollPosition = (current: ExplorerScrollMotion) =>
+      current.edge + current.direction * Math.max(-scrollEnd, Math.min(0, current.position));
+
+    const syncScroll = () => {
+      if (!motion) return;
+      const scroll = viewport.scrollTop;
+      if (Math.abs(scroll - scrollPosition(motion)) <= 1) return;
+
+      const position = motion.direction * (scroll - motion.edge);
+      if (motion.target > 0 && motion.position < 0 && position > motion.position) {
+        // A pending browser scroll can carry the list closer to the edge.
+        motion.position = position;
+      } else {
+        reset();
+      }
+    };
+
+    const extendStretch = (current: number, distance: number) =>
+      MAX_EXPLORER_STRETCH - (MAX_EXPLORER_STRETCH - current) * Math.exp(-distance / 140);
+
     const step = (time: number) => {
       if (!motion) return;
       const elapsed = Math.min(32, Math.max(0, time - previousFrame));
       previousFrame = time;
 
-      // Let the spring target recede as the wheel goes quiet, keeping its current velocity.
-      const releaseTime = Math.min(elapsed, Math.max(0, motion.idleTime + elapsed - 52));
-      motion.idleTime += elapsed;
-      motion.stretch *= Math.exp(-releaseTime / 69);
+      if (motion.target > 0) {
+        // Let the stretch recede as the wheel goes quiet, keeping its current velocity.
+        const releaseTime = Math.min(elapsed, Math.max(0, motion.idleTime + elapsed - 52));
+        motion.idleTime += elapsed;
+        motion.target *= Math.exp(-releaseTime / 69);
+      }
 
       const before = motion.position;
-      const displacement = before - motion.stretch;
-      const momentum = motion.velocity + DATABASE_SPRING_RATE * displacement;
-      const decay = Math.exp(-DATABASE_SPRING_RATE * elapsed);
-      motion.position = motion.stretch + (displacement + momentum * elapsed) * decay;
-      motion.velocity = (motion.velocity - DATABASE_SPRING_RATE * momentum * elapsed) * decay;
+      const displacement = before - motion.target;
+      const momentum = motion.velocity + EXPLORER_SPRING_RATE * displacement;
+      const decay = Math.exp(-EXPLORER_SPRING_RATE * elapsed);
+      motion.position = motion.target + (displacement + momentum * elapsed) * decay;
+      motion.velocity = (motion.velocity - EXPLORER_SPRING_RATE * momentum * elapsed) * decay;
 
-      const settled = Math.abs(motion.position) < 0.12 && motion.stretch < 0.12 &&
+      const settled = motion.target < 0.12 && Math.abs(motion.position - motion.target) < 0.12 &&
         Math.abs(motion.velocity) < 0.012;
-      if (!motion.recovering && (before < 0 || motion.position < 0)) {
-        viewport.scrollTop = motion.edge + motion.direction * (settled ? 0 : Math.min(0, motion.position));
-      }
+      if (settled) motion.position = Math.min(0, motion.target);
+      if (before < 0 || motion.position < 0) viewport.scrollTop = scrollPosition(motion);
       if (settled) {
         reset();
         return;
@@ -283,46 +431,42 @@ function DatabaseList({ databases, selected, disabled, onSelect }: {
 
       const pixelsPerUnit = deltaMode === WheelEvent.DOM_DELTA_PAGE ? pageHeight :
         deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
-      const direction = Math.sign(deltaY);
-      const edge = direction < 0 ? 0 : scrollEnd;
-      const distance = Math.abs(deltaY) * pixelsPerUnit;
-
-      const continuing = motion?.direction === direction && !motion.recovering ? motion : undefined;
-      if (!continuing && motion && !motion.recovering) {
-        // Let the browser scroll back into the list while the visible stretch settles.
-        motion.position = Math.max(0, motion.position);
-        motion.velocity = Math.min(0, motion.velocity);
-        motion.stretch = 0;
-        motion.recovering = true;
+      const wheelDistance = deltaY * pixelsPerUnit;
+      syncScroll();
+      if (motion) {
+        event.preventDefault();
+        const distance = motion.direction * wheelDistance;
+        if (distance < 0) {
+          // Carry the same motion back into the scroll range on a reversal.
+          const start = Math.min(0, motion.position, motion.target);
+          motion.target = Math.max(-scrollEnd, start + distance);
+        } else {
+          const excess = distance + Math.min(0, motion.target);
+          motion.target = excess > 0 ? extendStretch(Math.max(0, motion.target), excess) : excess;
+        }
+        motion.idleTime = 0;
+        return;
       }
 
-      const remaining = continuing ? 0 : Math.max(0, direction * (edge - viewport.scrollTop));
+      const direction = Math.sign(wheelDistance);
+      const edge = direction < 0 ? 0 : scrollEnd;
+      const distance = Math.abs(wheelDistance);
+      const remaining = Math.max(0, direction * (edge - viewport.scrollTop));
       const excess = distance - remaining;
       if (excess <= 0) return;
 
       event.preventDefault();
-      const currentStretch = continuing?.stretch ?? 0;
-      const stretch = MAX_DATABASE_STRETCH -
-        (MAX_DATABASE_STRETCH - currentStretch) * Math.exp(-excess / 140);
-      if (continuing) {
-        continuing.stretch = stretch;
-        continuing.idleTime = 0;
-        return;
-      }
-
+      const target = extendStretch(0, excess);
       motion = {
         direction,
         edge,
-        position: -remaining - direction * offset,
-        velocity: Math.min(distance, remaining + stretch) / 68,
-        stretch,
+        position: -remaining,
+        velocity: Math.min(distance, remaining + target) / 68,
+        target,
         idleTime: 0,
-        recovering: false,
       };
-      if (!frame) {
-        previousFrame = performance.now();
-        frame = window.requestAnimationFrame(step);
-      }
+      previousFrame = performance.now();
+      frame = window.requestAnimationFrame(step);
     };
 
     const resize = new ResizeObserver(() => {
@@ -334,44 +478,153 @@ function DatabaseList({ databases, selected, disabled, onSelect }: {
     resize.observe(viewport);
     resize.observe(track);
     viewport.addEventListener('wheel', onWheel, { passive: false });
+    viewport.addEventListener('scroll', syncScroll, { passive: true });
     reducedMotion.addEventListener('change', reset);
     return () => {
       resize.disconnect();
       viewport.removeEventListener('wheel', onWheel);
+      viewport.removeEventListener('scroll', syncScroll);
       reducedMotion.removeEventListener('change', reset);
       reset();
     };
   }, []);
 
   return (
-    <div className="database-scroll" ref={viewportRef}>
-      <div className="database-scroll-track" ref={trackRef}>
-        <ul className="database-list" ref={listRef}>
-          {databases.map((name) => (
-            <li key={name}>
-              <button className="database-item" aria-pressed={name === selected} disabled={disabled} onClick={() => onSelect(name)}>
-                <Database size={16} aria-hidden="true" /><span>{name}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+    <div className="explorer-scroll workspace-scrollbar" ref={viewportRef}>
+      <div className="explorer-scroll-track" ref={trackRef}>
+        <ul className="explorer-list" ref={listRef}>{children}</ul>
       </div>
     </div>
   );
 }
 
+function DatabaseTables({ database, open, onToggle, updateProblem, onSessionExpired }: {
+  database: string;
+  open: boolean;
+  onToggle: () => void;
+  updateProblem: UpdateWorkspaceProblem;
+  onSessionExpired: () => void;
+}) {
+  const { t } = useI18n();
+  const [tables, setTables] = useState<DatabaseTable[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshCount, setRefreshCount] = useState(0);
+  const expanded = !!database && open;
+
+  useEffect(() => {
+    if (!database) return;
+    const controller = new AbortController();
+    const search = new URLSearchParams({ database });
+    void api<DatabaseTable[]>(`/tables?${search}`, { signal: controller.signal })
+      .then((list) => {
+        if (!controller.signal.aborted) setTables(list);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (error instanceof ApiError && error.status === 401) onSessionExpired();
+        else updateProblem('tables', problemFromError(error), database);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [database, onSessionExpired, refreshCount, updateProblem]);
+
+  function refreshTables() {
+    setLoading(true);
+    updateProblem('tables', null);
+    setRefreshCount((count) => count + 1);
+  }
+
+  return (
+    <section className="explorer-section explorer-tables" data-expanded={expanded}>
+      <div className="pane-header explorer-header">
+        <h2>
+          <button
+            className="explorer-toggle"
+            aria-expanded={expanded}
+            aria-controls="explorer-tables"
+            disabled={!database}
+            onClick={onToggle}
+          >
+            <ChevronRight size={15} aria-hidden="true" />
+            <Table2 className="explorer-icon" size={16} aria-hidden="true" />
+            <span>{t('tables')}</span>
+          </button>
+        </h2>
+        <button
+          className="button icon-button explorer-refresh"
+          aria-label={t('refreshTables')}
+          title={t('refreshTables')}
+          disabled={!database || loading}
+          onClick={refreshTables}
+        ><RefreshCw size={16} aria-hidden="true" /></button>
+      </div>
+      <div className="explorer-panel" id="explorer-tables" hidden={!expanded} aria-busy={!!database && loading}>
+        {database && (tables?.length ? (
+          <ExplorerScrollList>
+            {tables.map(({ schema, name }) => {
+              const label = `${schema}.${name}`;
+              return (
+                <li className="explorer-item" key={JSON.stringify([schema, name])} title={label}>
+                  <Table2 size={16} aria-hidden="true" /><span>{label}</span>
+                </li>
+              );
+            })}
+          </ExplorerScrollList>
+        ) : loading ? <p className="explorer-message" role="status">{t('loadingTables')}</p> :
+          tables && <p className="explorer-message">{t('noTables')}</p>)}
+      </div>
+    </section>
+  );
+}
+
 function ResultGrid({ index, result }: { index: number; result: ResultTable }) {
   const { t, number } = useI18n();
+  const viewportRef = useRef<HTMLDivElement>(null);
   const title = t('resultTitle', { number: index + 1 });
   const count = result.rows.length;
   const rows = t(count === 1 ? 'rowCount' : 'rowsCount', { count });
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const table = viewport?.querySelector('table');
+    const bodyRows = table?.tBodies[0]?.rows;
+    const nextRow = bodyRows?.item(RESULT_PREVIEW_ROWS);
+    if (!viewport || !table || !bodyRows || !nextRow) return;
+
+    let frame = 0;
+    const fitPreview = () => {
+      frame = 0;
+      const shownHeight = nextRow.getBoundingClientRect().top - table.getBoundingClientRect().top;
+      const horizontalBar = viewport.offsetHeight - viewport.clientHeight;
+      const height = `${shownHeight + horizontalBar + RESULT_PREVIEW_PEEK_HEIGHT}px`;
+      if (viewport.style.getPropertyValue('--result-preview-height') !== height) {
+        viewport.style.setProperty('--result-preview-height', height);
+      }
+    };
+
+    fitPreview();
+    const observer = new ResizeObserver(() => {
+      if (!frame) frame = window.requestAnimationFrame(fitPreview);
+    });
+    observer.observe(viewport);
+    if (table.tHead) observer.observe(table.tHead);
+    for (let index = 0; index < RESULT_PREVIEW_ROWS; index++) observer.observe(bodyRows[index]);
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+      viewport.style.removeProperty('--result-preview-height');
+    };
+  }, [result]);
+
   return (
-    <section className="result-grid" aria-labelledby={`result-title-${index}`}>
+    <section className="result-grid" id={`result-grid-${index}`} aria-labelledby={`result-title-${index}`}>
       <div className="result-title">
         <h3 id={`result-title-${index}`}><Table2 size={15} aria-hidden="true" />{title}</h3>
         <span>{result.truncated ? t('truncatedRows', { rows }) : rows}</span>
       </div>
-      <div className="table-scroll" role="region" aria-label={t('resultData', { result: title })} tabIndex={0}>
+      <div className="table-scroll workspace-scrollbar" ref={viewportRef} role="region" aria-label={t('resultData', { result: title })} tabIndex={0}>
         <table aria-label={title}>
           <thead>
             <tr><th scope="col">#</th>{result.columns.map((column, i) => <th key={i} scope="col">{column || t('unnamedColumn')}</th>)}</tr>

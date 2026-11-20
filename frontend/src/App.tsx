@@ -8,12 +8,14 @@ import { HistoryInput } from './HistoryInput';
 import { useI18n } from './i18n';
 import { serverKey, useLoginHistory } from './loginHistory';
 import { Workspace } from './Workspace';
+import type { WorkspaceProblem } from './Workspace';
 
 export function App() {
   const { language, setLanguage, t } = useI18n();
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
   const [authError, setAuthError] = useState<Problem | null>(null);
+  const [workspaceProblem, setWorkspaceProblem] = useState<WorkspaceProblem | null>(null);
   const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
@@ -31,17 +33,23 @@ export function App() {
 
   const sessionExpired = useCallback(() => {
     setAuthError({ code: 'session_expired' });
+    setWorkspaceProblem(null);
     setSession(null);
+  }, []);
+
+  const updateWorkspaceProblem = useCallback((source: WorkspaceProblem['source'], problem: Problem | null, database?: string) => {
+    setWorkspaceProblem((current) => problem ? { source, problem, database } : current?.source === source ? null : current);
   }, []);
 
   async function logOut() {
     setSigningOut(true);
-    setAuthError(null);
+    updateWorkspaceProblem('logout', null);
     try {
       await api<void>('/logout', { method: 'POST' });
+      setWorkspaceProblem(null);
       setSession(null);
     } catch (error) {
-      setAuthError(problemFromError(error));
+      updateWorkspaceProblem('logout', problemFromError(error));
     } finally {
       setSigningOut(false);
     }
@@ -72,12 +80,9 @@ export function App() {
       {checking ? (
         <main className="sign-in-shell"><p role="status">{t('checkingSession')}</p></main>
       ) : session ? (
-        <>
-          {authError && <ErrorNotice problem={authError} className="top-notice" />}
-          <Workspace onSessionExpired={sessionExpired} />
-        </>
+        <Workspace issue={workspaceProblem} updateProblem={updateWorkspaceProblem} onSessionExpired={sessionExpired} />
       ) : (
-        <SignIn initialError={authError} onSignedIn={(value) => { setAuthError(null); setSession(value); }} />
+        <SignIn initialError={authError} onSignedIn={(value) => { setAuthError(null); setWorkspaceProblem(null); setSession(value); }} />
       )}
     </div>
   );

@@ -1,10 +1,10 @@
 import type { Problem } from './api';
 import { useI18n } from './i18n';
 
-export function ErrorNotice({ problem, className = '' }: { problem: Problem; className?: string }) {
+export function ErrorNotice({ problem }: { problem: Problem }) {
   const { t, errorText } = useI18n();
   return (
-    <div className={`notice ${className}`}>
+    <div className="notice">
       <p role="alert">{errorText(problem)}</p>
       {problem.detail && (
         <details className="error-details">
