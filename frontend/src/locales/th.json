@@ -42,6 +42,7 @@
     "largeResultsWarning": "ข้อมูลเยอะเกินไป เบราว์เซอร์อาจหน่วง",
     "resizeEditor": "ปรับความสูงช่องเขียน SQL",
     "resizeResult": "ปรับความสูง {result}",
+    "resizeColumn": "ปรับความกว้างคอลัมน์ {column}",
     "elapsedTime": "{count} มิลลิวินาที",
     "chooseResults": "เลือกผลลัพธ์",
     "chooseResultsCount": "เลือกผลลัพธ์ ({visible}/{total})",

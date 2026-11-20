@@ -8,12 +8,11 @@ import { useEditorTabs } from './editorTabs';
 import type { EditorTab } from './editorTabs';
 import { ErrorNotice } from './ErrorNotice';
 import { useI18n } from './i18n';
+import { ResultGrid } from './ResultGrid';
 import { selectedSql, SqlEditor } from './SqlEditor';
 import { VerticalResizeHandle } from './VerticalResizeHandle';
 
 const MAX_VISIBLE_RESULTS = 5;
-const RESULT_PREVIEW_ROWS = 3;
-const RESULT_PREVIEW_PEEK_HEIGHT = 18;
 const RESULT_WARNING_CELLS = 10_000;
 const RESULT_WARNING_TEXT_LENGTH = 1_000_000;
 const MAX_EXPLORER_STRETCH = 26;
@@ -711,73 +710,6 @@ function DatabaseTables({ database, open, onToggle, updateProblem, onSessionExpi
           </ExplorerScrollList>
         ) : loading ? <p className="explorer-message" role="status">{t('loadingTables')}</p> :
           tables && <p className="explorer-message">{t('noTables')}</p>)}
-      </div>
-    </section>
-  );
-}
-
-function ResultGrid({ index, result }: { index: number; result: ResultTable }) {
-  const { t, number } = useI18n();
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const title = t('resultTitle', { number: index + 1 });
-  const count = result.rows.length;
-  const rows = t(count === 1 ? 'rowCount' : 'rowsCount', { count });
-
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current;
-    const table = viewport?.querySelector('table');
-    const bodyRows = table?.tBodies[0]?.rows;
-    const nextRow = bodyRows?.item(RESULT_PREVIEW_ROWS);
-    if (!viewport || !table || !bodyRows || !nextRow) return;
-
-    let frame = 0;
-    const fitPreview = () => {
-      frame = 0;
-      const shownHeight = nextRow.getBoundingClientRect().top - table.getBoundingClientRect().top;
-      const horizontalBar = viewport.offsetHeight - viewport.clientHeight;
-      const height = `${shownHeight + horizontalBar + RESULT_PREVIEW_PEEK_HEIGHT}px`;
-      if (viewport.style.getPropertyValue('--result-preview-height') !== height) {
-        viewport.style.setProperty('--result-preview-height', height);
-      }
-    };
-
-    fitPreview();
-    const observer = new ResizeObserver(() => {
-      if (!frame) frame = window.requestAnimationFrame(fitPreview);
-    });
-    observer.observe(viewport);
-    if (table.tHead) observer.observe(table.tHead);
-    for (let index = 0; index < RESULT_PREVIEW_ROWS; index++) observer.observe(bodyRows[index]);
-    return () => {
-      observer.disconnect();
-      window.cancelAnimationFrame(frame);
-      viewport.style.removeProperty('--result-preview-height');
-    };
-  }, [result]);
-
-  return (
-    <section className="result-grid" id={`result-grid-${index}`} aria-labelledby={`result-title-${index}`}>
-      <div className="result-title">
-        <h3 id={`result-title-${index}`}><Table2 size={15} aria-hidden="true" />{title}</h3>
-        <span>{result.truncated ? t('truncatedRows', { rows }) : rows}</span>
-      </div>
-      <div className="table-scroll workspace-scrollbar" ref={viewportRef} role="region" aria-label={t('resultData', { result: title })} tabIndex={0}>
-        <table aria-label={title}>
-          <thead>
-            <tr><th scope="col">#</th>{result.columns.map((column, i) => <th key={i} scope="col">{column || t('unnamedColumn')}</th>)}</tr>
-          </thead>
-          <tbody>
-            {result.rows.map((row, i) => (
-              <tr key={i}>
-                <th scope="row">{number(i + 1)}</th>
-                {row.map((cell, j) => cell === null ?
-                  <td className="null-cell" key={j}>{t('nullValue')}</td> :
-                  <td key={j} title={cell}>{cell}</td>,
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
     </section>
   );

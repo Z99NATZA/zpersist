@@ -42,6 +42,7 @@
     "largeResultsWarning": "There’s a lot of data. Your browser may slow down.",
     "resizeEditor": "Resize SQL editor",
     "resizeResult": "Resize {result}",
+    "resizeColumn": "Resize {column} column",
     "elapsedTime": "{count} ms",
     "chooseResults": "Choose results",
     "chooseResultsCount": "Choose results ({visible}/{total})",
