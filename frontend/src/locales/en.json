@@ -44,6 +44,7 @@
     "results": "Results",
     "largeResultsWarning": "There’s a lot of data. Your browser may slow down.",
     "resizeSidebar": "Resize database sidebar",
+    "resizeDatabases": "Resize database list",
     "resizeEditor": "Resize SQL editor",
     "resizeResult": "Resize {result}",
     "resizeColumn": "Resize {column} column",

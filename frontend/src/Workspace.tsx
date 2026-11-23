@@ -224,6 +224,11 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
     if (name && queryIssue?.problem.code === 'database_required') updateQuery(activeId, { issue: null });
   }
 
+  function changeExplorerPane(pane: 'top' | 'bottom', open: boolean) {
+    if (pane === 'top') setDatabasesOpen(open);
+    else setTablesOpen(open);
+  }
+
   function runSql() {
     const view = editor.current;
     if (!view || activeQueries.current.has(activeId)) return;
@@ -327,7 +332,7 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
 
       <div className="workspace-body">
         <aside id="explorer-pane" className="explorer workspace-scrollbar" aria-label={t('databases')}>
-          <section className="explorer-section" data-expanded={databasesOpen}>
+          <section className="explorer-section" id="explorer-databases-pane" data-expanded={databasesOpen}>
             <div className="pane-header explorer-header">
               <h2>
                 <button
@@ -361,6 +366,15 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
               {databases?.length ? <DatabaseList databases={databases} selected={database} disabled={running} onSelect={chooseDatabase} /> : null}
             </ExplorerListPanel>
           </section>
+
+          {database && (
+            <VerticalResizeHandle
+              kind="explorer"
+              controls="explorer-databases-pane"
+              label={t('resizeDatabases')}
+              onExplorerPaneChange={changeExplorerPane}
+            />
+          )}
 
           <DatabaseTables
             key={database}

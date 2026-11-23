@@ -8,7 +8,7 @@ const DRAG_SCROLL_SPEED = 0.65;
 
 type ResizeTarget = {
   controls: string;
-  kind: 'editor' | 'result';
+  kind: 'editor' | 'explorer' | 'result';
 };
 
 function fullResultHeight(pane: HTMLElement) {
@@ -23,23 +23,37 @@ function fullResultHeight(pane: HTMLElement) {
 
 function measure(handle: HTMLDivElement, { controls, kind }: ResizeTarget) {
   const pane = handle.ownerDocument.getElementById(controls);
-  if (!pane || !handle.parentElement) return null;
+  const layout = handle.parentElement;
+  if (!pane || !layout || !handle.offsetHeight) return null;
   const height = pane.offsetHeight;
 
+  if (kind === 'explorer') {
+    const available = layout.clientHeight;
+    const listMinimum = Number.parseFloat(getComputedStyle(layout).getPropertyValue('--explorer-list-min-height'));
+    const min = Math.min(listMinimum, Math.floor(available / 2));
+    const bottom = handle.nextElementSibling;
+    const topOpen = pane.dataset.expanded === 'true';
+    const bottomOpen = bottom?.getAttribute('data-expanded') === 'true';
+    const bottomHeight = topOpen || bottomOpen ? 0 : bottom?.getBoundingClientRect().height ?? 0;
+    return { pane, height, min, max: available - min, kind, topOpen, bottomOpen, available, bottomHeight };
+  }
+
   if (kind === 'editor') {
-    const available = Math.max(0, handle.parentElement.clientHeight - handle.offsetHeight);
+    const available = Math.max(0, layout.clientHeight - handle.offsetHeight);
     const editorMinimum = Math.min(120, Math.floor(available * 0.36));
     const resultsPane = handle.nextElementSibling;
     const bottomSpace = resultsPane ? Number.parseFloat(getComputedStyle(resultsPane).paddingBlockEnd) || 0 : 0;
     const resultsMinimum = Math.min(available - editorMinimum, Math.min(136, Math.floor(available * 0.52)) + bottomSpace);
-    return { pane, height, min: editorMinimum, max: available - resultsMinimum };
+    return { pane, height, min: editorMinimum, max: available - resultsMinimum, kind };
   }
 
   const max = fullResultHeight(pane);
-  return { pane, height: Math.min(height, max), min: MIN_RESULT_HEIGHT, max };
+  return { pane, height: Math.min(height, max), min: MIN_RESULT_HEIGHT, max, kind };
 }
 
 type Split = NonNullable<ReturnType<typeof measure>>;
+type ExplorerSplit = Extract<Split, { kind: 'explorer' }>;
+type ExplorerPane = 'top' | 'bottom';
 
 type PointerDrag = {
   handle: HTMLDivElement;
@@ -61,13 +75,35 @@ function clampHeight(split: Split, height: number) {
 }
 
 function resize(split: Split, height: number) {
-  split.pane.style.height = `${clampHeight(split, height)}px`;
+  const next = clampHeight(split, height);
+  if (split.kind === 'explorer') {
+    if (next !== split.height) split.pane.style.setProperty('--explorer-databases-height', `${next}px`);
+    return;
+  }
+  split.pane.style.height = `${next}px`;
   split.pane.dataset.resized = '';
 }
 
 function clearDraft(handle: HTMLDivElement) {
   delete handle.dataset.draft;
   handle.style.removeProperty('--resize-draft-offset');
+}
+
+function showDraft(handle: HTMLDivElement, offset: number) {
+  handle.dataset.draft = '';
+  handle.style.setProperty('--resize-draft-offset', `${offset}px`);
+}
+
+function openingPane(split: ExplorerSplit, direction: number) {
+  if (direction > 0 && !split.topOpen) return 'top';
+  if (direction < 0 && !split.bottomOpen) return 'bottom';
+  return null;
+}
+
+function showExplorerDraft(handle: HTMLDivElement, split: ExplorerSplit, height: number, opening: ExplorerPane | null) {
+  const target = split.topOpen || split.bottomOpen ? clampHeight(split, height) :
+    opening === 'top' ? split.available - split.bottomHeight : split.height;
+  showDraft(handle, target - split.height);
 }
 
 function updateDrag(drag: PointerDrag, height: number, renderedHeight = drag.appliedHeight) {
@@ -82,8 +118,7 @@ function updateDrag(drag: PointerDrag, height: number, renderedHeight = drag.app
   if (draft === null) {
     clearDraft(drag.handle);
   } else {
-    drag.handle.dataset.draft = '';
-    drag.handle.style.setProperty('--resize-draft-offset', `${draft - displayedHeight}px`);
+    showDraft(drag.handle, draft - displayedHeight);
   }
 }
 
@@ -130,48 +165,98 @@ function scrollDuringDrag(drag: PointerDrag, elapsed: number) {
   return moved !== 0;
 }
 
-export function VerticalResizeHandle({ label, controls, kind }: ResizeTarget & { label: string }) {
+export function VerticalResizeHandle({ label, controls, kind, onExplorerPaneChange }: ResizeTarget & {
+  label: string;
+  onExplorerPaneChange?: (pane: ExplorerPane, open: boolean) => void;
+}) {
   const handleRef = useRef<HTMLDivElement>(null);
   const drag = useRef<PointerDrag | null>(null);
 
+  function clearDrag(handle: HTMLDivElement) {
+    const current = drag.current;
+    if (!current) return;
+    window.cancelAnimationFrame(current.frame);
+    drag.current = null;
+    delete handle.dataset.dragging;
+    clearDraft(handle);
+    if (handle.hasPointerCapture(current.pointer)) handle.releasePointerCapture(current.pointer);
+  }
+
+  function adjustExplorer(handle: HTMLDivElement, split: ExplorerSplit, height: number, direction: number, commit: boolean) {
+    const opening = openingPane(split, direction);
+    if (split.topOpen && split.bottomOpen) {
+      const closing = direction < 0 && height <= split.min ? 'top' :
+        direction > 0 && height >= split.max ? 'bottom' : null;
+      if (closing) {
+        clearDrag(handle);
+        onExplorerPaneChange?.(closing, false);
+        return;
+      }
+    } else if (!opening) {
+      clearDraft(handle);
+      return;
+    }
+
+    if (!commit) {
+      showExplorerDraft(handle, split, height, opening);
+      return;
+    }
+
+    if (split.topOpen || split.bottomOpen) resize(split, height);
+    if (opening) onExplorerPaneChange?.(opening, true);
+  }
+
+  function updateExplorerDrag(current: PointerDrag, commit: boolean) {
+    const { handle } = current;
+    const split = measure(handle, { controls, kind });
+    if (split?.kind === 'explorer') adjustExplorer(handle, split, heightAtPointer(current), current.y - current.startY, commit);
+  }
+
   useEffect(() => {
     const handle = handleRef.current;
-    if (!handle) return;
+    const pane = handle?.ownerDocument.getElementById(controls);
+    if (!handle || !pane) return;
     const target = { controls, kind };
-    const initial = measure(handle, target);
-    if (!initial) return;
 
     function sync() {
       if (!handle) return;
       const split = measure(handle, target);
-      if (!split) return;
-      const height = clampHeight(split, split.height);
-      if (height !== split.pane.offsetHeight) resize(split, height);
-      handle.setAttribute('aria-valuemin', String(split.min));
-      handle.setAttribute('aria-valuemax', String(split.max));
+      if (!split) {
+        clearDrag(handle);
+        return;
+      }
+      const height = split.kind === 'explorer' ? split.height : clampHeight(split, split.height);
+      if (split.kind === 'explorer') {
+        const current = drag.current;
+        if (current) {
+          const opening = openingPane(split, current.y - current.startY);
+          if ((split.topOpen && split.bottomOpen) || opening) {
+            showExplorerDraft(handle, split, heightAtPointer(current), opening);
+          } else {
+            clearDraft(handle);
+          }
+        }
+      } else if (height !== split.pane.offsetHeight) {
+        resize(split, height);
+      }
+      handle.setAttribute('aria-valuemin', String(Math.min(split.min, height)));
+      handle.setAttribute('aria-valuemax', String(Math.max(split.max, height)));
       handle.setAttribute('aria-valuenow', String(height));
     }
 
     sync();
     const observer = new ResizeObserver(sync);
-    observer.observe(initial.pane);
-    if (kind === 'editor' && handle.parentElement) observer.observe(handle.parentElement);
+    observer.observe(pane);
+    if (kind !== 'result' && handle.parentElement) observer.observe(handle.parentElement);
     if (kind === 'result') {
-      const table = initial.pane.querySelector('table');
+      const table = pane.querySelector('table');
       if (table) observer.observe(table);
     }
     window.addEventListener('resize', sync);
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', sync);
-      const current = drag.current;
-      if (current) {
-        window.cancelAnimationFrame(current.frame);
-        drag.current = null;
-        delete handle.dataset.dragging;
-        clearDraft(handle);
-        if (handle.hasPointerCapture(current.pointer)) handle.releasePointerCapture(current.pointer);
-      }
+      clearDrag(handle);
     };
   }, [controls, kind]);
 
@@ -207,6 +292,10 @@ export function VerticalResizeHandle({ label, controls, kind }: ResizeTarget & {
     const current = drag.current;
     if (current?.pointer !== event.pointerId) return;
     current.y = event.clientY;
+    if (kind === 'explorer') {
+      updateExplorerDrag(current, false);
+      return;
+    }
     updateDrag(current, heightAtPointer(current, current.viewport?.getBoundingClientRect()));
     if (!current.viewport || current.frame) return;
 
@@ -224,21 +313,36 @@ export function VerticalResizeHandle({ label, controls, kind }: ResizeTarget & {
   function stopDragging(event: PointerEvent<HTMLDivElement>) {
     const current = drag.current;
     if (current?.pointer !== event.pointerId) return;
-    window.cancelAnimationFrame(current.frame);
-    drag.current = null;
-    if (event.type === 'pointerup' && current.draftHeight !== null) resize(current.split, current.draftHeight);
-    delete event.currentTarget.dataset.dragging;
-    clearDraft(event.currentTarget);
+    clearDrag(event.currentTarget);
+    if (event.type !== 'pointerup') return;
+    if (kind === 'explorer') {
+      current.y = event.clientY;
+      updateExplorerDrag(current, true);
+    } else if (current.draftHeight !== null) {
+      resize(current.split, current.draftHeight);
+    }
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (kind === 'explorer' && drag.current) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearDrag(event.currentTarget);
+      }
+      return;
+    }
     if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     const split = measure(event.currentTarget, { controls, kind });
     if (!split) return;
     event.preventDefault();
     delete event.currentTarget.dataset.pointerFocus;
+    const direction = event.key === 'Home' || event.key === 'ArrowUp' ? -1 : 1;
     const height = event.key === 'Home' ? split.min : event.key === 'End' ? split.max :
-      split.height + (event.key === 'ArrowUp' ? -RESIZE_STEP : RESIZE_STEP);
+      split.height + direction * RESIZE_STEP;
+    if (split.kind === 'explorer') {
+      adjustExplorer(event.currentTarget, split, height, direction, true);
+      return;
+    }
     resize(split, height);
     if (kind === 'result') event.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
