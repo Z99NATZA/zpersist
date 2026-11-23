@@ -4,6 +4,7 @@ import type { EditorView } from '@codemirror/view';
 import { ChevronRight, Database, ListFilter, Play, Plus, RefreshCw, Save, Table2, Terminal, X } from 'lucide-react';
 import { api, ApiError, problemFromError } from './api';
 import type { CellValue, DatabaseTable, Problem, QueryResponse, ResultTable } from './api';
+import { DatabaseSelect } from './DatabaseSelect';
 import { useEditorTabs } from './editorTabs';
 import type { EditorTab } from './editorTabs';
 import { ErrorNotice } from './ErrorNotice';
@@ -304,20 +305,13 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
   return (
     <main className="workspace">
       <div className="command-bar">
-        <div className="database-select">
-          <label htmlFor="active-database">{t('database')}</label>
-          <select
-            id="active-database"
-            value={database}
-            onChange={(event) => chooseDatabase(event.target.value)}
-            disabled={!databases?.length || running}
-            aria-invalid={databaseRequired || undefined}
-            aria-describedby={databaseRequired ? 'workspace-notice' : undefined}
-          >
-            <option value="">{t('chooseDatabase')}</option>
-            {databases?.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
-        </div>
+        <DatabaseSelect
+          databases={databases}
+          value={database}
+          disabled={running}
+          errorId={databaseRequired ? 'workspace-notice' : undefined}
+          onChange={chooseDatabase}
+        />
         <button
           className="button button-primary"
           disabled={!hasSqlToRun || running || saving}

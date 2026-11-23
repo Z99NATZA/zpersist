@@ -61,7 +61,6 @@
   --vim-linewise: #484034;
   --vim-blockwise: #483849;
   --vim-replace: #49373b;
-  --database-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%23abb2bf' stroke-width='1.5'/%3E%3C/svg%3E");
   --sql-keyword: #a7c7f9;
   --sql-type: #dbb2e8;
   --sql-string: #b8d2a0;
@@ -327,22 +326,83 @@ button:focus-visible, input:focus-visible, select:focus-visible, .table-scroll:f
   background: var(--panel, var(--surface));
   border-bottom: 1px solid var(--border);
 }
-.database-select { display: flex; align-items: center; gap: 8px; }
+.database-select { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .database-select label { color: var(--muted); font-size: .875rem; }
-.database-select select {
+.database-picker { position: relative; min-width: 0; }
+.database-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 24ch;
-  min-width: 0;
+  max-width: 100%;
   height: 34px;
-  padding: 4px 29px 4px 9px;
-  appearance: none;
-  background: var(--surface) var(--database-arrow, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%234e647b' stroke-width='1.5'/%3E%3C/svg%3E")) no-repeat right 8px center;
+  padding: 4px 8px 4px 9px;
+  background: var(--surface);
   border: 1px solid var(--control-border, #c3d7eb);
   border-radius: 5px;
   color: var(--ink);
   font-size: .875rem;
+  text-align: start;
 }
-.database-select select:disabled { color: var(--muted); background-color: var(--disabled-panel, #f3f7fb); }
-.database-select select[aria-invalid="true"] { border-color: var(--danger-border, #d48b8b); }
+.database-trigger:disabled { color: var(--muted); background: var(--disabled-panel, #f3f7fb); }
+.database-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.database-trigger[aria-invalid="true"] { border-color: var(--danger-border, #d48b8b); }
+.database-trigger svg, .database-search svg { flex: none; color: var(--muted); }
+.database-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+.database-trigger span, .database-option span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.database-popup {
+  position: absolute;
+  z-index: 2;
+  inset: calc(100% + 4px) 0 auto;
+  padding: 5px;
+  border: 1px solid var(--control-border, #c3d7eb);
+  border-radius: 6px;
+  background: var(--panel, var(--surface));
+  box-shadow: 0 5px 14px var(--shadow, #204b7626);
+}
+.database-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--control-border, #c3d7eb);
+  border-radius: 4px;
+  background: var(--surface);
+}
+.database-search:focus-within { border-color: var(--accent); }
+.database-search input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: .875rem;
+}
+.database-search input::placeholder { color: var(--muted); }
+.database-options {
+  max-height: min(255px, 42dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.database-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 7px;
+  border-radius: 4px;
+  font-size: .875rem;
+  cursor: pointer;
+}
+.database-option:is(:hover, [data-active="true"]) { background: var(--hover-panel, #e8f2fe); }
+.database-option svg { flex: none; color: var(--accent); }
+.database-no-matches { padding: 7px; color: var(--muted); font-size: .875rem; }
 .workspace-body {
   --workspace-bar-height: 40px;
   display: grid;

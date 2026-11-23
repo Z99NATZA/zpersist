@@ -22,6 +22,8 @@
     "running": "กำลังรัน…",
     "database": "ฐานข้อมูล",
     "chooseDatabase": "เลือกฐานข้อมูล",
+    "searchDatabases": "ค้นหาฐานข้อมูล",
+    "noMatchingDatabases": "ไม่พบฐานข้อมูลที่ตรงกับคำค้น",
     "databases": "ฐานข้อมูล",
     "refreshDatabases": "รีเฟรชรายการฐานข้อมูล",
     "loadingDatabases": "กำลังโหลดฐานข้อมูล…",

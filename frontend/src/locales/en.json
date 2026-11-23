@@ -22,6 +22,8 @@
     "running": "Running…",
     "database": "Database",
     "chooseDatabase": "Choose a database",
+    "searchDatabases": "Search databases",
+    "noMatchingDatabases": "No matching databases.",
     "databases": "Databases",
     "refreshDatabases": "Refresh databases",
     "loadingDatabases": "Loading databases…",
