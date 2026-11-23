@@ -91,6 +91,7 @@ export function SidebarResizeHandle({ controls, label }: { controls: string; lab
     if (!split) return;
 
     event.preventDefault();
+    handle.dataset.pointerFocus = '';
     handle.focus({ preventScroll: true });
     handle.setPointerCapture(event.pointerId);
     drag.current = { pointer: event.pointerId, startX: event.clientX, startWidth: split.width, x: event.clientX };
@@ -130,6 +131,7 @@ export function SidebarResizeHandle({ controls, label }: { controls: string; lab
     const split = measure(handle);
     if (!split) return;
     event.preventDefault();
+    delete handle.dataset.pointerFocus;
     const width = event.key === 'Home' ? split.min : event.key === 'End' ? split.max :
       split.width + (event.key === 'ArrowLeft' ? -RESIZE_STEP : RESIZE_STEP);
     resize(split, width);
@@ -149,6 +151,7 @@ export function SidebarResizeHandle({ controls, label }: { controls: string; lab
       onPointerUp={finishDrag}
       onPointerCancel={finishDrag}
       onLostPointerCapture={finishDrag}
+      onBlur={(event) => { delete event.currentTarget.dataset.pointerFocus; }}
       onKeyDown={onKeyDown}
     />
   );

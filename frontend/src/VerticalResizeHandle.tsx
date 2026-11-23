@@ -183,6 +183,7 @@ export function VerticalResizeHandle({ label, controls, kind }: ResizeTarget & {
     const viewport = kind === 'result' ? handle.closest<HTMLElement>('.results-scroll') : null;
     const bounds = handle.getBoundingClientRect();
     event.preventDefault();
+    handle.dataset.pointerFocus = '';
     handle.focus({ preventScroll: true });
     handle.setPointerCapture(event.pointerId);
     handle.dataset.dragging = '';
@@ -235,6 +236,7 @@ export function VerticalResizeHandle({ label, controls, kind }: ResizeTarget & {
     const split = measure(event.currentTarget, { controls, kind });
     if (!split) return;
     event.preventDefault();
+    delete event.currentTarget.dataset.pointerFocus;
     const height = event.key === 'Home' ? split.min : event.key === 'End' ? split.max :
       split.height + (event.key === 'ArrowUp' ? -RESIZE_STEP : RESIZE_STEP);
     resize(split, height);
@@ -255,6 +257,7 @@ export function VerticalResizeHandle({ label, controls, kind }: ResizeTarget & {
       onPointerUp={stopDragging}
       onPointerCancel={stopDragging}
       onLostPointerCapture={stopDragging}
+      onBlur={(event) => { delete event.currentTarget.dataset.pointerFocus; }}
       onKeyDown={onKeyDown}
     />
   );

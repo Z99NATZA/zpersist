@@ -431,19 +431,25 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
           <section className="results-pane">
             <div className="pane-header">
               <div className="results-heading">
-                <h2 id="results-title">{t('results')}</h2>
+                <h2 id="results-title">
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    aria-haspopup="dialog"
+                    title={results.length ? t('chooseResultsCount', { visible: visible.length, total: results.length }) : undefined}
+                    disabled={!results.length || running}
+                    onClick={() => setPicking(true)}
+                  >
+                    <ListFilter size={16} aria-hidden="true" />
+                    {t('results')}
+                  </button>
+                </h2>
                 {response && <span className="query-metrics">{t('elapsedTime', { count: response.elapsed_ms })}</span>}
               </div>
-              <div className="results-actions">
-                <button type="button" className="button button-primary" disabled={!hasDrafts || running || saving} onClick={saveEdits}>
-                  <Save size={15} aria-hidden="true" />
-                  {t(saving ? 'savingResults' : 'saveResults')}
-                </button>
-                <button type="button" className="button button-secondary" disabled={!results.length || running} onClick={() => setPicking(true)}>
-                  <ListFilter size={16} aria-hidden="true" />
-                  {results.length ? t('chooseResultsCount', { visible: visible.length, total: results.length }) : t('chooseResults')}
-                </button>
-              </div>
+              <button type="button" className="button button-primary" disabled={!hasDrafts || running || saving} onClick={saveEdits}>
+                <Save size={15} aria-hidden="true" />
+                {t(saving ? 'savingResults' : 'saveResults')}
+              </button>
             </div>
             <div className="results-scroll workspace-scrollbar" role="region" aria-labelledby="results-title" tabIndex={0} key={activeId}>
               <div className="results-content">

@@ -735,20 +735,22 @@ button:focus-visible, input:focus-visible, select:focus-visible, .table-scroll:f
 }
 .vertical-resize-handle::before {
   top: calc(50% - 2px);
-  left: calc(50% - 16px);
-  width: 32px;
+  left: calc(50% - 48px);
+  width: 96px;
   height: 4px;
 }
 .sidebar-resize-handle::before {
-  top: calc(50% - 16px);
+  top: calc(50% - 48px);
   left: calc(50% - 2px);
   width: 4px;
-  height: 32px;
+  height: 96px;
 }
-:is(.vertical-resize-handle, .sidebar-resize-handle):is(:hover, :focus-visible, [data-dragging])::before { background: var(--icon, #316fa7); }
+:is(.vertical-resize-handle, .sidebar-resize-handle):is(:focus-visible:not([data-pointer-focus]), [data-dragging])::before {
+  background: var(--icon, #316fa7);
+}
 :is(.vertical-resize-handle, .sidebar-resize-handle):focus { outline: none; }
-.vertical-resize-handle:focus-visible::before { top: calc(50% - 3px); height: 6px; }
-.sidebar-resize-handle:focus-visible::before { left: calc(50% - 3px); width: 6px; }
+.vertical-resize-handle:focus-visible:not([data-pointer-focus])::before { top: calc(50% - 3px); height: 6px; }
+.sidebar-resize-handle:focus-visible:not([data-pointer-focus])::before { left: calc(50% - 3px); width: 6px; }
 :is(.vertical-resize-handle, .sidebar-resize-handle)[data-dragging]::after {
   position: absolute;
   content: "";
@@ -789,8 +791,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .table-scroll:f
 }
 .results-scroll:has(.vertical-resize-handle[data-dragging]) { overflow-anchor: none; }
 .results-content { display: flow-root; }
-.results-heading { display: flex; align-items: baseline; gap: 10px; }
-.results-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.results-heading { display: flex; align-items: center; gap: 10px; }
 .query-metrics { color: var(--muted); font-size: .8125rem; }
 .empty-results {
   min-height: 180px;
