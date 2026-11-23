@@ -43,6 +43,7 @@
     "sqlEditor": "ช่องเขียน SQL",
     "results": "ผลลัพธ์",
     "largeResultsWarning": "ข้อมูลเยอะเกินไป เบราว์เซอร์อาจหน่วง",
+    "resizeSidebar": "ปรับความกว้างแถบฐานข้อมูล",
     "resizeEditor": "ปรับความสูงช่องเขียน SQL",
     "resizeResult": "ปรับความสูง {result}",
     "resizeColumn": "ปรับความกว้างคอลัมน์ {column}",

@@ -43,6 +43,7 @@
     "sqlEditor": "SQL editor",
     "results": "Results",
     "largeResultsWarning": "There’s a lot of data. Your browser may slow down.",
+    "resizeSidebar": "Resize database sidebar",
     "resizeEditor": "Resize SQL editor",
     "resizeResult": "Resize {result}",
     "resizeColumn": "Resize {column} column",

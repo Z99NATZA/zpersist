@@ -12,6 +12,7 @@ import { useI18n } from './i18n';
 import { ResultGrid } from './ResultGrid';
 import { applySavedRows, changeDraft, pendingRows } from './resultEdits';
 import type { ChangeCell, ResultDrafts } from './resultEdits';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { selectedSql, SqlEditor, startsWithUse } from './SqlEditor';
 import { VerticalResizeHandle } from './VerticalResizeHandle';
 
@@ -325,7 +326,7 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
       </div>
 
       <div className="workspace-body">
-        <aside className="explorer workspace-scrollbar" aria-label={t('databases')}>
+        <aside id="explorer-pane" className="explorer workspace-scrollbar" aria-label={t('databases')}>
           <section className="explorer-section" data-expanded={databasesOpen}>
             <div className="pane-header explorer-header">
               <h2>
@@ -370,6 +371,8 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
             onSessionExpired={onSessionExpired}
           />
         </aside>
+
+        <SidebarResizeHandle controls="explorer-pane" label={t('resizeSidebar')} />
 
         <div className="work-area">
           <section className="editor-pane" id="editor-pane" aria-label={t('queryEditor')}>
