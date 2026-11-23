@@ -26,6 +26,16 @@ export function selectedSql(state: EditorState): string | null {
   return ranges.length ? ranges.map(({ from, to }) => state.sliceDoc(from, to)).join('\n').trim() : null;
 }
 
+export function startsWithUse(sql: string): boolean {
+  const script = sqlServer.language.parser.parse(sql).topNode;
+  for (let node = script.firstChild; node; node = node.nextSibling) {
+    const first = node.firstChild;
+    if (node.name !== 'Statement' || first?.name === ';') continue;
+    return first?.name === 'Keyword' && sql.slice(first.from, first.to).toUpperCase() === 'USE';
+  }
+  return false;
+}
+
 export function SqlEditor({ editor, initialSql, vimEnabled, autoFocus, onChange, onSelectionChange, onRun }: {
   editor: RefObject<EditorView | null>;
   initialSql: string;

@@ -11,7 +11,7 @@ import { useI18n } from './i18n';
 import { ResultGrid } from './ResultGrid';
 import { applySavedRows, changeDraft, pendingRows } from './resultEdits';
 import type { ChangeCell, ResultDrafts } from './resultEdits';
-import { selectedSql, SqlEditor } from './SqlEditor';
+import { selectedSql, SqlEditor, startsWithUse } from './SqlEditor';
 import { VerticalResizeHandle } from './VerticalResizeHandle';
 
 const MAX_VISIBLE_RESULTS = 5;
@@ -94,13 +94,13 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
   const [closingTab, setClosingTab] = useState<number | null>(null);
   const [replacingResults, setReplacingResults] = useState<string | null>(null);
   const [autoFocusEditor, setAutoFocusEditor] = useState(false);
-  const databaseSelect = useRef<HTMLSelectElement>(null);
   const errorNotice = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView>(null);
   const activeQueries = useRef(new Map<number, AbortController>());
   const sharedIssue = issue?.source === 'tables' && issue.database !== database ? null : issue;
   const displayedIssue = queryIssue && (!sharedIssue || queryIssue.reportedAt >= sharedIssue.reportedAt)
     ? queryIssue : sharedIssue;
+  const isQueryIssue = displayedIssue === queryIssue;
   const databaseRequired = displayedIssue?.problem.code === 'database_required';
 
   const loadDatabases = useCallback(async () => {
@@ -131,10 +131,8 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
     if (!displayedIssue) return;
     const notice = errorNotice.current;
     notice?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    const select = databaseSelect.current;
-    const target = databaseRequired && select && !select.disabled ? select : notice;
-    target?.focus({ preventScroll: true });
-  }, [displayedIssue, databaseRequired]);
+    if (!isQueryIssue && !editor.current?.hasFocus) notice?.focus({ preventScroll: true });
+  }, [displayedIssue, isQueryIssue]);
 
   function updateTab(change: Partial<Pick<EditorTab, 'sql' | 'database'>>) {
     updateEditorTabs((current) => ({
@@ -225,11 +223,13 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
   }
 
   function runSql() {
-    const state = editor.current?.state;
-    if (!state || activeQueries.current.has(activeId)) return;
+    const view = editor.current;
+    if (!view || activeQueries.current.has(activeId)) return;
+    const { state } = view;
     const query = selectedSql(state) ?? state.doc.toString().trim();
     if (!query) return;
-    if (!database) {
+    if (!view.hasFocus) view.focus();
+    if (!database && !startsWithUse(query)) {
       updateQuery(activeId, { issue: { problem: { code: 'database_required' }, reportedAt: performance.now() } });
       return;
     }
@@ -308,7 +308,6 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
           <label htmlFor="active-database">{t('database')}</label>
           <select
             id="active-database"
-            ref={databaseSelect}
             value={database}
             onChange={(event) => chooseDatabase(event.target.value)}
             disabled={!databases?.length || running}
@@ -530,7 +529,7 @@ function ConfirmationDialog({ title, description, confirmLabel, onCancel, onConf
       <div className="dialog-footer close-tab-footer">
         <div>
           <button type="button" className="button button-secondary" onClick={() => dialog.current?.close()} autoFocus>{t('cancel')}</button>
-          <button type="button" className="button button-primary" onClick={onConfirm}>{confirmLabel}</button>
+          <button type="button" className="button button-primary" onClick={() => { dialog.current?.close(); onConfirm(); }}>{confirmLabel}</button>
         </div>
       </div>
     </dialog>

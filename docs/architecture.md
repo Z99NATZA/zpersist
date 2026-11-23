@@ -92,8 +92,8 @@ Batch preparation
 ==========
 
 The workspace sends the selected SQL text or the full editor contents with
-the tab's database. The UI requires a database selection. API requests with
-an omitted, null, or empty database use master.
+the tab's database. When the dropdown is empty, the submitted SQL must start
+with USE. API requests with an omitted, null, or empty database use master.
 
 The backend parses the input with the sqlparser SQL Server dialect. The
 validator accepts query statements and single-identifier USE statements,

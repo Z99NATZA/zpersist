@@ -113,8 +113,8 @@ when the browser or operating system passes them to the editor.
 Query execution
 ==========
 
-Choose a database before running a query. With a selection, Run sends only
-the selected text. Otherwise it sends the whole editor contents.
+Choose a database or start the SQL with USE. With a selection, Run sends
+only the selected text. Otherwise it sends the whole editor contents.
 
 SQL drafts
 ----------

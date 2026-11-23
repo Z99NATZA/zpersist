@@ -93,7 +93,7 @@
     "read_only": "This editor supports read-only SELECT queries and USE. Highlight those statements and try again.",
     "no_select": "Add at least one SELECT statement to run.",
     "invalid_database": "Choose a database from the list and try again.",
-    "database_required": "Choose a database before running SQL.",
+    "database_required": "Choose a database or start your SQL with USE.",
     "table_not_found": "SQL Server couldn’t find the table or view. Check its name and the selected database.",
     "column_not_found": "SQL Server couldn’t find a column. Check the column name or alias.",
     "permission_denied": "Your SQL Server account can’t run this query. Check its permissions.",
