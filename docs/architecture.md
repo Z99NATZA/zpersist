@@ -96,9 +96,10 @@ the tab's database. When the dropdown is empty, the submitted SQL must start
 with USE. API requests with an omitted, null, or empty database use master.
 
 The backend parses the input with the sqlparser SQL Server dialect. The
-validator accepts query statements and single-identifier USE statements,
-requires at least one query, and rejects SELECT INTO. SQL Server applies the
-signed-in account's permissions to database and object access.
+validator accepts SELECT, INSERT, UPDATE, DELETE, and single-identifier USE
+statements. A batch must contain at least one statement besides USE.
+SELECT INTO is rejected. SQL Server applies the signed-in account's
+permissions and its normal batch execution rules.
 
 The backend quotes the database identifier and prepends USE to every batch
 so a reused connection starts in the requested database. A permitted USE
@@ -110,8 +111,10 @@ Execution and result collection
 The backend checks out a connection, runs the batch, and reads the complete
 TDS result stream even when only a preview is retained. It returns the
 connection to the pool after success and drops it after an execution error
-or timeout. The response contains the result sets and elapsed milliseconds,
-including pool checkout time.
+or timeout. The response contains the result sets, including rows from DML
+OUTPUT clauses, and elapsed milliseconds, including pool checkout time.
+The workspace reports success when a batch completes without result sets.
+Grid editing is available for eligible results from read-only batches.
 ```
 
 | Limit | Behavior |

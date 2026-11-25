@@ -490,7 +490,7 @@ export function Workspace({ storageKey, vimEnabled, issue, updateProblem, onSess
                   ) : (!displayedIssue || running) && (
                     <div className="empty-results" role="status">
                       <Table2 size={28} strokeWidth={1.5} aria-hidden="true" />
-                      <p>{t(running ? 'runningSql' : response ? (results.length ? 'chooseResultsEmpty' : 'noResults') : 'runForResults')}</p>
+                      <p>{t(running ? 'runningSql' : response ? (results.length ? 'chooseResultsEmpty' : 'sqlCompleted') : 'runForResults')}</p>
                     </div>
                   )}
                 </div>
